@@ -72,10 +72,12 @@ echo "OK: Dependencies installed"
 echo
 
 # Create .env file if it doesn't exist
+ENV_JUST_CREATED=0
 if [[ ! -f ".env" ]]; then
     if [[ -f ".env.example" ]]; then
         echo "Creating .env file from template..."
         cp .env.example .env
+        ENV_JUST_CREATED=1
         echo "OK: .env file created"
         echo
         echo "IMPORTANT: Edit .env and add your Capital.com credentials:"
@@ -92,19 +94,39 @@ fi
 # Verify installation
 echo "Verifying installation..."
 if python -c "import capital_mcp" 2>/dev/null; then
-    echo "OK: Installation successful!"
+    echo "OK: Package installed"
 else
     echo "Error: Installation verification failed" >&2
     exit 1
 fi
 echo
 
+# Validate credentials locally (no API calls) before reporting a usable setup
+echo "Checking credentials..."
+if python -m capital_mcp.validate_env; then
+    CREDENTIALS_READY=1
+else
+    CREDENTIALS_READY=0
+fi
+echo
+
 # Get Python path
 PYTHON_PATH=$(which python)
 
-echo "============================================"
-echo "Installation Complete!"
-echo "============================================"
+if [[ $CREDENTIALS_READY -eq 1 ]]; then
+    echo "============================================"
+    echo "Installation Complete!"
+    echo "============================================"
+else
+    echo "============================================"
+    echo "Setup Incomplete - Credentials Required"
+    echo "============================================"
+    echo
+    echo "Dependencies are installed, but the server will refuse to start until"
+    echo "CAP_API_KEY, CAP_IDENTIFIER and CAP_API_PASSWORD hold real values."
+    echo "Generate a Demo API key at Capital.com > Settings > API integrations,"
+    echo "put the values in .env, then re-run ./install.sh"
+fi
 echo
 echo "Python path (use this in MCP client config):"
 echo "  $PYTHON_PATH"
@@ -127,8 +149,8 @@ cat <<EOF
         "CAP_API_KEY": "your_api_key_here",
         "CAP_IDENTIFIER": "your_email@example.com",
         "CAP_API_PASSWORD": "your_custom_password",
-        "CAP_ALLOW_TRADING": "false",
-        "CAP_ALLOWED_EPICS": ""
+        "CAP_ALLOW_TRADING": "true",
+        "CAP_ALLOWED_EPICS": "ALL"
       }
     }
   }
@@ -143,3 +165,9 @@ EOF
 echo
 echo "For detailed instructions, see README.md"
 echo
+
+# A template .env written by this run is the expected state, so only report failure
+# once the user has had a chance to fill it in.
+if [[ $CREDENTIALS_READY -ne 1 && $ENV_JUST_CREATED -ne 1 ]]; then
+    exit 1
+fi

@@ -74,8 +74,13 @@ class CapitalMCPError(Exception):
 class ConfigError(CapitalMCPError):
     """Configuration error."""
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
-        super().__init__(ErrorCode.CONFIG_INVALID, message, details)
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+        code: str = ErrorCode.CONFIG_INVALID,
+    ):
+        super().__init__(code, message, details)
 
 
 class TradingDisabledError(CapitalMCPError):

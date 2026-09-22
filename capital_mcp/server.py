@@ -2,16 +2,18 @@
 
 import logging
 import re
+import sys
 from datetime import datetime, timedelta, timezone
-from importlib.metadata import version as _pkg_version
 from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.resources import ResourceContent
 
+from . import __version__
 from .capital_client import get_client
 from .config import get_config
 from .error_handler import ErrorHandlerMiddleware
+from .errors import CapitalMCPError
 from .models import (
     Direction,
     PreviewPositionRequest,
@@ -44,7 +46,7 @@ CONFIRM_REQUIRED_MESSAGE = "Explicit confirmation required. Set confirm=true"
 CONFIRMATION_TIMEOUT_MESSAGE = "Confirmation timed out"
 
 # Initialize FastMCP server
-mcp = FastMCP("Capital.com MCP Server", version=_pkg_version("capital-mcp"))
+mcp = FastMCP("Capital.com MCP Server", version=__version__)
 mcp.add_middleware(ErrorHandlerMiddleware())
 
 
@@ -2240,7 +2242,7 @@ async def cap_status_resource() -> list[Any]:
             {
                 "server": {
                     "name": "Capital.com MCP Server",
-                    "version": "0.1.0",
+                    "version": __version__,
                     "trading_enabled": config.cap_allow_trading,
                 },
                 "session": {
@@ -2252,7 +2254,7 @@ async def cap_status_resource() -> list[Any]:
                 "risk": {
                     "trading_enabled": config.cap_allow_trading,
                     "allowed_epics": allowed_epics,
-                    "allowlist_mode": "ALL" if "ALL" in allowed_epics else "SPECIFIC",
+                    "allowlist_mode": "ALL" if config.allowlist_is_wildcard else "SPECIFIC",
                 },
                 "rate_limits": {
                     "requests_per_second": "10",
@@ -2283,7 +2285,7 @@ async def cap_risk_policy_resource() -> list[Any]:
                 "two_phase_execution": True,
                 "description": "All trades require preview → explicit execution",
                 "allowlist": {
-                    "mode": "ALL" if "ALL" in allowed_epics else "SPECIFIC",
+                    "mode": "ALL" if config.allowlist_is_wildcard else "SPECIFIC",
                     "epics": allowed_epics,
                     "note": "Only markets on this list can be traded (ALL = wildcard)",
                 },
@@ -2323,7 +2325,18 @@ async def cap_allowed_epics_resource() -> list[Any]:
     config = get_config()
 
     epics = list(risk.get_allowed_epics())
-    has_wildcard = "ALL" in epics
+    has_wildcard = config.allowlist_is_wildcard
+    shadowed = config.wildcard_shadowed_epics
+
+    if not has_wildcard:
+        description = f"Restricted mode: {len(epics)} specific markets allowed"
+    elif shadowed:
+        description = (
+            f"Wildcard mode: ALL markets allowed. {shadowed} are listed but have no "
+            "effect — remove ALL from CAP_ALLOWED_EPICS to restrict trading to them."
+        )
+    else:
+        description = "Wildcard mode: ALL markets allowed"
 
     return [
         ResourceContent(
@@ -2332,11 +2345,8 @@ async def cap_allowed_epics_resource() -> list[Any]:
                 "allowed_epics": epics,
                 "count": len(epics),
                 "trading_enabled": config.cap_allow_trading,
-                "description": (
-                    "Wildcard mode: ALL markets allowed"
-                    if has_wildcard
-                    else f"Restricted mode: {len(epics)} specific markets allowed"
-                ),
+                "shadowed_epics": shadowed,
+                "description": description,
                 "configuration": {
                     "env_var": "CAP_ALLOWED_EPICS",
                     "example": "CAP_ALLOWED_EPICS=GOLD,SILVER,BTCUSD",
@@ -2787,17 +2797,34 @@ async def live_portfolio_monitor(
 # ============================================================
 
 
-if __name__ == "__main__":
-    config = get_config()
+def main() -> None:
+    """Validate configuration, then serve MCP over STDIO.
+
+    Configuration is validated before the transport starts, so placeholder or empty
+    credentials never reach the Capital.com API.
+    """
+    try:
+        config = get_config()
+    except CapitalMCPError as exc:
+        # Logging is not configured yet and STDOUT carries the MCP protocol.
+        print(f"[{exc.code}] {exc.message}", file=sys.stderr)
+        raise SystemExit(1) from None
+
     logger.info(f"Starting Capital.com MCP Server (env: {config.cap_env.value})")
     logger.info(f"Trading enabled: {config.cap_allow_trading}")
 
     if config.cap_allow_trading:
-        allowed = config.allowed_epics_list
-        if allowed and allowed[0].upper() == "ALL":
-            logger.info("Allowed EPICs: ALL (no restrictions)")
+        if config.allowlist_is_wildcard:
+            logger.warning("Allowed EPICs: ALL — every instrument is tradeable")
+            shadowed = config.wildcard_shadowed_epics
+            if shadowed:
+                logger.warning(f"{shadowed} ignored because ALL is in CAP_ALLOWED_EPICS")
         else:
-            logger.info(f"Allowed EPICs: {allowed}")
+            logger.info(f"Allowed EPICs: {config.allowed_epics_list}")
 
     # Run FastMCP server (handles STDIO automatically)
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

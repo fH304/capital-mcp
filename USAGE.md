@@ -91,8 +91,8 @@ CAP_API_PASSWORD=your_custom_password  # API key password
 
 Safety variables (recommended):
 ```bash
-CAP_ALLOW_TRADING=false                # Enable trading (default: false)
-CAP_ALLOWED_EPICS=                     # Allowlist (empty = block all)
+CAP_ALLOW_TRADING=true                 # Enable trading (default: true)
+CAP_ALLOWED_EPICS=ALL                  # Allowed instruments (ALL = every one; empty = block all)
 CAP_MAX_POSITION_SIZE=1.0              # Max position size
 CAP_MAX_WORKING_ORDER_SIZE=1.0         # Max order size
 CAP_MAX_OPEN_POSITIONS=3               # Max concurrent positions
@@ -141,7 +141,7 @@ Edit: %APPDATA%\Claude\claude_desktop_config.json
         "CAP_IDENTIFIER": "your_email@example.com",
         "CAP_API_PASSWORD": "your_custom_password",
         "CAP_ALLOW_TRADING": "false",
-        "CAP_ALLOWED_EPICS": "",
+        "CAP_ALLOWED_EPICS": "ALL",
         "CAP_LOG_LEVEL": "INFO"
       }
     }
@@ -402,13 +402,13 @@ You: "Show markets in watchlist [id]"
 
 ### Built-in Safety Layers
 
-**Layer 1: Trading Disabled by Default**
+**Layer 1: Trading Switch**
 - `CAP_ALLOW_TRADING=false` blocks all trade execution
-- Must explicitly enable in configuration
+- Enabled by default
 
 **Layer 2: Epic Allowlist**
-- `CAP_ALLOWED_EPICS` whitelist (empty = block all)
-- Only listed EPICs can be traded
+- `CAP_ALLOWED_EPICS` allowlist (default `ALL` = every instrument; empty = block all)
+- Only listed EPICs can be traded unless the allowlist is `ALL`
 - Case-insensitive matching
 
 **Layer 3: Size Limits**
@@ -447,7 +447,7 @@ You: "Show markets in watchlist [id]"
    - Monitor for 1-2 days before expanding
 
 3. **Use Allowlist**
-   - Never set `CAP_ALLOWED_EPICS` to "*" or empty when trading enabled
+   - Narrow `CAP_ALLOWED_EPICS` from the default `ALL` before enabling trading
    - List only EPICs you understand and want to trade
    - Review weekly
 

@@ -79,10 +79,12 @@ Write-Host "OK: Dependencies installed"
 Write-Host ""
 
 # Create .env file if it doesn't exist
+$envJustCreated = $false
 if (-not (Test-Path ".env")) {
     if (Test-Path ".env.example") {
         Write-Host "Creating .env file from template..."
         Copy-Item ".env.example" ".env"
+        $envJustCreated = $true
         Write-Host "OK: .env file created"
         Write-Host ""
         Write-Host "IMPORTANT: Edit .env and add your Capital.com credentials:"
@@ -97,22 +99,51 @@ if (-not (Test-Path ".env")) {
 }
 
 # Verify installation
+# Native commands may or may not throw on non-zero exit depending on the PowerShell
+# version, so both the exit code and a terminating error are handled.
 Write-Host "Verifying installation..."
+$importOk = $false
 try {
     & python -c "import capital_mcp" 2>$null
-    Write-Host "OK: Installation successful!"
+    $importOk = ($LASTEXITCODE -eq 0)
 } catch {
+    $importOk = $false
+}
+if (-not $importOk) {
     Write-Host "Error: Installation verification failed"
     exit 1
+}
+Write-Host "OK: Package installed"
+Write-Host ""
+
+# Validate credentials locally (no API calls) before reporting a usable setup
+Write-Host "Checking credentials..."
+$credentialsReady = $false
+try {
+    & python -m capital_mcp.validate_env
+    $credentialsReady = ($LASTEXITCODE -eq 0)
+} catch {
+    $credentialsReady = $false
 }
 Write-Host ""
 
 # Get Python path
 $pythonPath = (Get-Command python).Source
 
-Write-Host "============================================"
-Write-Host "Installation Complete!"
-Write-Host "============================================"
+if ($credentialsReady) {
+    Write-Host "============================================"
+    Write-Host "Installation Complete!"
+    Write-Host "============================================"
+} else {
+    Write-Host "============================================"
+    Write-Host "Setup Incomplete - Credentials Required"
+    Write-Host "============================================"
+    Write-Host ""
+    Write-Host "Dependencies are installed, but the server will refuse to start until"
+    Write-Host "CAP_API_KEY, CAP_IDENTIFIER and CAP_API_PASSWORD hold real values."
+    Write-Host "Generate a Demo API key at Capital.com > Settings > API integrations,"
+    Write-Host "put the values in .env, then re-run .\install.ps1"
+}
 Write-Host ""
 Write-Host "Python path (use this in MCP client config):"
 Write-Host "  $pythonPath"
@@ -135,8 +166,8 @@ Write-Host @"
         "CAP_API_KEY": "your_api_key_here",
         "CAP_IDENTIFIER": "your_email@example.com",
         "CAP_API_PASSWORD": "your_custom_password",
-        "CAP_ALLOW_TRADING": "false",
-        "CAP_ALLOWED_EPICS": ""
+        "CAP_ALLOW_TRADING": "true",
+        "CAP_ALLOWED_EPICS": "ALL"
       }
     }
   }
@@ -149,3 +180,9 @@ Write-Host "claude mcp add capital-com -- $pythonPath -m capital_mcp.server"
 Write-Host ""
 Write-Host "For detailed instructions, see README.md"
 Write-Host ""
+
+# A template .env written by this run is the expected state, so only report failure
+# once the user has had a chance to fill it in.
+if (-not $credentialsReady -and -not $envJustCreated) {
+    exit 1
+}

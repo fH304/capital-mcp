@@ -1,6 +1,6 @@
 [project]
 name = "capital-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "Model Context Protocol server for Capital.com Open API"
 authors = [
     {name = "Capital MCP Team"}
@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 
 dependencies = [
-    "fastmcp>=0.2.0",
+    "fastmcp>=3.3.1,<4.0.0",
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",

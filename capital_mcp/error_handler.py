@@ -4,7 +4,7 @@ import logging
 import time
 
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from mcp import types as mt
 from pydantic import ValidationError
 

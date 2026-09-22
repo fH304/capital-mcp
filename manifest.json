@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "capital-mcp",
   "display_name": "Capital.com Public API MCP Server",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Model Context Protocol server for Capital.com Open API — enabling safe, LLM-driven trading operations.",
   "long_description": "A Python MCP server built with FastMCP 3.x that integrates with the Capital.com Open API. Provides tools for market data, account management, position tracking, and order execution via natural language. Uses STDIO transport and supports both demo and live trading environments.\n\nThis server requires valid Capital.com credentials. Always test with the demo environment before using in live trading.",
   "author": {
@@ -49,10 +49,10 @@
   },
   "user_config": {
     "env": {
-      "type": "string",
-      "title": "Environment",
-      "description": "Trading environment: 'demo' for paper trading, 'live' for real money. Valid values: demo, live.",
-      "default": "demo",
+      "type": "boolean",
+      "title": "Live Environment (off = Demo)",
+      "description": "On = real money.",
+      "default": false,
       "required": false
     },
     "api_key": {
@@ -62,12 +62,6 @@
       "sensitive": true,
       "required": true
     },
-    "identifier": {
-      "type": "string",
-      "title": "Email (Identifier)",
-      "description": "Your Capital.com account email address used to log in.",
-      "required": true
-    },
     "password": {
       "type": "string",
       "title": "API Password",
@@ -75,18 +69,24 @@
       "sensitive": true,
       "required": true
     },
+    "identifier": {
+      "type": "string",
+      "title": "Email (Identifier)",
+      "description": "Your Capital.com account email address used to log in.",
+      "required": true
+    },
     "allow_trading": {
       "type": "boolean",
       "title": "Allow Trading",
       "description": "Enable trading operations. When false, only read-only tools (market data, account info) are available.",
-      "default": false,
+      "default": true,
       "required": false
     },
     "allowed_epics": {
       "type": "string",
       "title": "Allowed EPICs",
-      "description": "Comma-separated list of instrument EPICs allowed for trading (e.g. SILVER,GOLD,BTCUSD). Use 'ALL' for unrestricted. Required when trading is enabled.",
-      "default": "",
+      "description": "Which instruments trading is allowed on. 'ALL' (the default) permits every instrument. To restrict, replace it with a comma-separated list of EPICs (e.g. SILVER,GOLD,BTCUSD). Leaving this empty blocks all trading — it is not the same as 'ALL'.",
+      "default": "ALL",
       "required": false
     },
     "dry_run": {

@@ -24,7 +24,7 @@ When you have no access at all: give concise copy-pasteable commands. Don't dump
 
 Before starting, inform the user:
 
-> Your use of the Capital.com Public API and any third-party tools you connect to it, including AI or LLM-based tools, is at your own discretion and risk. Capital.com operates on an execution-only basis and does not control, endorse, or accept liability for any third-party software, its outputs, or any resulting outcomes. Nothing here constitutes investment advice or a recommendation to trade. Always start with a **Demo account**. Trading is disabled by default.
+> Your use of the Capital.com Public API and any third-party tools you connect to it, including AI or LLM-based tools, is at your own discretion and risk. Capital.com operates on an execution-only basis and does not control, endorse, or accept liability for any third-party software, its outputs, or any resulting outcomes. Nothing here constitutes investment advice or a recommendation to trade. Always start with a **Demo account**. Trading is enabled by default.
 
 ---
 
@@ -64,7 +64,7 @@ python --version    # Python (Windows)
    CAP_IDENTIFIER={identifier}
    CAP_API_PASSWORD={password}
    CAP_ALLOW_TRADING=false
-   CAP_ALLOWED_EPICS=
+   CAP_ALLOWED_EPICS=ALL
    ```
 
 3. Test:
@@ -168,7 +168,7 @@ CAP_API_KEY={api_key}
 CAP_IDENTIFIER={identifier}
 CAP_API_PASSWORD={password}
 CAP_ALLOW_TRADING=false
-CAP_ALLOWED_EPICS=
+CAP_ALLOWED_EPICS=ALL
 ```
 
 ---
@@ -243,10 +243,17 @@ Any STDIO-capable client works via stdin/stdout JSON-RPC:
 
 ## Step 5: Validate
 
-1. Restart the MCP client.
-2. Test: **"What Capital.com tools are available?"** — should list 36 tools.
-3. Test: **"Check my Capital.com session status"** — calls `cap_session_status`.
-4. Test: **"Login to my Capital.com account"** — calls `cap_session_login`, validates credentials.
+1. Check the credentials locally first — no API call, no rate limit cost:
+   ```bash
+   python -m capital_mcp.validate_env
+   ```
+   Exit code 0 means the credentials are usable. `CONFIG_MISSING` / `CONFIG_INVALID` means
+   `CAP_API_KEY`, `CAP_IDENTIFIER` or `CAP_API_PASSWORD` is empty or still a placeholder —
+   fix it before restarting the client, since the server refuses to start in that state.
+2. Restart the MCP client.
+3. Test: **"What Capital.com tools are available?"** — should list 36 tools.
+4. Test: **"Check my Capital.com session status"** — calls `cap_session_status`.
+5. Test: **"Login to my Capital.com account"** — calls `cap_session_login`, validates credentials.
 
 ---
 
@@ -257,6 +264,7 @@ Any STDIO-capable client works via stdin/stdout JSON-RPC:
 - **"Python X.Y found, but 3.10 or higher is required"** → Upgrade Python.
 - **"venv module not found"** → Ubuntu/Debian: `sudo apt install python3-venv`.
 - **"ModuleNotFoundError: No module named 'capital_mcp'"** → Run `pip install -e .` in the venv, or re-run install script.
+- **`[CONFIG_MISSING]` / `[CONFIG_INVALID]` on startup** → `CAP_API_KEY`, `CAP_IDENTIFIER` or `CAP_API_PASSWORD` is empty or still a `.env.example` placeholder. Generate a Demo API key at Settings → API integrations, replace the values, and re-check with `python -m capital_mcp.validate_env`.
 - **Docker "image not found"** → `docker pull ghcr.io/capital-com-sv/capital-mcp:latest`.
 
 ### MCP client doesn't show tools

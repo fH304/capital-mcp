@@ -9,7 +9,7 @@ Model Context Protocol (MCP) server for Capital.com Open API - enabling LLM-driv
 **Crypto Derivatives are not available to Retail clients registered with Capital Com (UK) Ltd.**
 
 - Always start with a **Demo account** before considering live trading
-- Trading is **disabled by default** and requires explicit configuration
+- Trading is **enabled by default** and can be disabled in configuration
 - All trade operations require **two-phase execution** (preview → confirm → execute)
 - Built-in risk controls: allowlists, size limits, daily order caps
 - **Use at your own risk** - the authors assume no liability for trading losses
@@ -84,12 +84,13 @@ CAP_API_KEY=your_generated_api_key_here
 CAP_IDENTIFIER=your_email@example.com
 CAP_API_PASSWORD=your_custom_api_password
 
-# Trading controls (keep trading disabled until ready)
-CAP_ALLOW_TRADING=false
-CAP_ALLOWED_EPICS=
+# Trading controls
+CAP_ALLOW_TRADING=true
+CAP_ALLOWED_EPICS=ALL
 
 # Optional: enable later for real trading
 # CAP_ALLOW_TRADING=true
+# Narrow the allowlist to the instruments you actually trade
 # CAP_ALLOWED_EPICS=SILVER,GOLD,BTCUSD
 ```
 
@@ -226,8 +227,8 @@ CAP_ALLOWED_EPICS=SILVER
 - `CAP_API_PASSWORD` - API key custom password
 
 ### Risk Controls (Recommended)
-- `CAP_ALLOW_TRADING` - Enable trading (default: false)
-- `CAP_ALLOWED_EPICS` - Comma-separated allowlist (e.g., "SILVER,GOLD,BTCUSD") or "ALL" for unrestricted
+- `CAP_ALLOW_TRADING` - Enable trading (default: true)
+- `CAP_ALLOWED_EPICS` - Instruments trading is allowed on (default: `ALL`, every instrument). Restrict with a comma-separated list, e.g. "SILVER,GOLD,BTCUSD". Empty blocks all trading
 - `CAP_MAX_POSITION_SIZE` - Max position size (default: 1.0)
 - `CAP_MAX_WORKING_ORDER_SIZE` - Max order size (default: 1.0)
 - `CAP_MAX_OPEN_POSITIONS` - Max concurrent positions (default: 3)
@@ -288,7 +289,7 @@ All side-effect operations use a strict preview → execute flow:
    - Increments daily order counter
 
 ### Risk Controls
-- **Allowlist**: Only EPICs in `CAP_ALLOWED_EPICS` can be traded
+- **Allowlist**: Only EPICs in `CAP_ALLOWED_EPICS` can be traded; the default `ALL` permits every instrument
 - **Size Limits**: Max position/order size enforced
 - **Position Limits**: Max open positions at any time
 - **Daily Limits**: Max orders per day
