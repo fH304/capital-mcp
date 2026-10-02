@@ -47,4 +47,4 @@ USER mcp
 
 RUN python -c "import importlib, pkgutil, capital_mcp; [importlib.import_module(m.name) for m in pkgutil.iter_modules(capital_mcp.__path__, 'capital_mcp.') if not m.name.endswith('.__main__')]"
 
-ENTRYPOINT ["python", "-m", "capital_mcp.server"]
+ENTRYPOINT ["python", "-m", "capital_mcp.remote"]
