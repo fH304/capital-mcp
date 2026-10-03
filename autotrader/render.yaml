@@ -1,0 +1,30 @@
+# This Blueprint creates a PAID worker and a PAID persistent disk.
+# Review the current quoted total in Render before deploying.
+services:
+  - type: worker
+    name: capital-demo-autotrader
+    runtime: docker
+    plan: starter
+    region: ohio
+    dockerfilePath: ./autotrader/Dockerfile
+    dockerContext: .
+    numInstances: 1
+    disk:
+      name: bot-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: CAP_ENV
+        value: demo
+      - key: BOT_MODE
+        value: paper
+      - key: BOT_STATE_PATH
+        value: /var/data/paper.sqlite
+      - key: BOT_ACCOUNT_ID
+        sync: false
+      - key: CAP_API_KEY
+        sync: false
+      - key: CAP_IDENTIFIER
+        sync: false
+      - key: CAP_API_PASSWORD
+        sync: false
