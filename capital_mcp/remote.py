@@ -34,7 +34,7 @@ def build_server() -> FastMCP:
     get_config()  # Fail before listening if Capital credentials are missing.
     if not os.environ.get("GITHUB_OWNER", "").strip():
         raise ValueError("GITHUB_OWNER is required")
-    base_url = os.environ["PUBLIC_BASE_URL"].rstrip("/")
+        base_url = (os.environ.get("PUBLIC_BASE_URL") or os.environ["RENDER_EXTERNAL_URL"]).rstrip("/")
     if not base_url.startswith("https://"):
         raise ValueError("PUBLIC_BASE_URL must use HTTPS")
     auth = GitHubProvider(
