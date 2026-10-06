@@ -84,7 +84,9 @@ class DemoCoordinator:
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS smart_entries ('
                         'signal TEXT PRIMARY KEY, account TEXT NOT NULL, '
-                        'status TEXT NOT NULL, plan TEXT NOT NULL, deal TEXT)')
+                        'status TEXT NOT NULL, plan TEXT NOT NULL, deal TEXT, reference TEXT)')
+        if 'reference' not in {row[1] for row in self.db.execute('PRAGMA table_info(smart_entries)')}:
+            self.db.execute('ALTER TABLE smart_entries ADD COLUMN reference TEXT')
         self.db.commit()
 
     def close(self):
@@ -114,7 +116,7 @@ class DemoCoordinator:
             if self.db.execute("SELECT 1 FROM smart_entries WHERE account=? AND status IN ('pending','uncertain')",
                                (self.account_id,)).fetchone():
                 raise CoordinationError('Unresolved order; broker reconciliation required')
-            self.db.execute('INSERT INTO smart_entries VALUES (?,?,?,?,NULL)',
+            self.db.execute('INSERT INTO smart_entries (signal,account,status,plan) VALUES (?,?,?,?)',
                             (signal, self.account_id, 'pending', json.dumps(plan, allow_nan=False)))
             self.db.commit()
         except Exception:
@@ -123,6 +125,10 @@ class DemoCoordinator:
         # No error/timeout is classified as rejection without broker evidence.
         try:
             reference = broker.submit_entry(dict(plan))
+            if not isinstance(reference, str) or not reference or len(reference)>256:
+                raise CoordinationError('Invalid order reference')
+            self.db.execute('UPDATE smart_entries SET reference=? WHERE signal=?', (reference, signal))
+            self.db.commit()
             confirmation = broker.confirm_entry(reference)
             keys = ('account_id', 'epic', 'direction', 'size', 'stop_level', 'target_level')
             if (not isinstance(confirmation, dict) or confirmation.get('status') != 'confirmed'

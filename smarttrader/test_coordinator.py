@@ -57,6 +57,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertAlmostEqual(result['plan']['planned_risk'], result['plan']['size']*.011)
     def test_confirmation_and_persistent_duplicate(self):
         self.assertEqual(self.process(armed=True)['status'], 'confirmed')
+        self.assertEqual(self.coordinator.db.execute('SELECT reference FROM smart_entries').fetchone()[0], 'reference-1')
         self.coordinator.close()
         self.coordinator = DemoCoordinator(self.path, 'demo-1')
         self.assertEqual(self.process(armed=True)['status'], 'duplicate')
@@ -75,6 +76,7 @@ class CoordinatorTests(unittest.TestCase):
         self.broker.mismatch = True
         with self.assertRaises(CoordinationError):
             self.process(armed=True)
+        self.assertEqual(self.coordinator.db.execute('SELECT reference FROM smart_entries').fetchone()[0], 'reference-1')
         with self.assertRaises(CoordinationError):
             self.process('candle-2', armed=True)
     def test_real_and_wrong_account_block(self):
