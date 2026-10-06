@@ -63,6 +63,12 @@ def validate_context(context, now):
             raise AnalysisError('Invalid or stale news') from None
     if len(ids) != len(articles):
         raise AnalysisError('Duplicate evidence IDs')
+    if 'timeframes' in context:
+        from .candles import validate_frames, MarketDataError
+        try:
+            validate_frames(context['timeframes'],now)
+        except MarketDataError as error:
+            raise AnalysisError(str(error)) from None
     return ids
 
 

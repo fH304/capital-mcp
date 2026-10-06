@@ -64,6 +64,8 @@ class CapitalDemo:
         allowed = (method == 'GET' and (path in {'/session', '/accounts', '/positions', '/workingorders'}
                     or re.fullmatch(r'/(markets|positions|confirms)/[A-Za-z0-9_.:%-]+', path)))
         allowed = allowed or (method == 'POST' and path in {'/session', '/positions'})
+        allowed = allowed or (method=='GET' and re.fullmatch(
+            r'/prices/[A-Za-z0-9_.:%-]+\?resolution=(MINUTE_15|HOUR|HOUR_4)&max=([1-9]|[1-3][0-9]|40)',path))
         if not allowed:
             raise CapitalError('Endpoint outside adapter scope')
         with self.lock:
@@ -118,6 +120,43 @@ class CapitalDemo:
         if str(session.get('accountId')) != self.expected_account:
             self.account_id, self.headers = None, {}
             raise CapitalError('Active account changed')
+
+    def prices(self,epic,resolution,count=40):
+        from .candles import RESOLUTIONS
+        if resolution not in RESOLUTIONS or type(count) is not int or not 1<=count<=40:
+            raise CapitalError('Invalid historical price request')
+        self.verify_session()
+        data=self.get('/prices/'+identifier(epic)+'?resolution='+resolution+'&max='+str(count))
+        rows=data.get('prices')
+        if not isinstance(rows,list) or len(rows)>count:
+            raise CapitalError('Invalid historical prices response')
+        return rows
+
+    def market_quote(self,epic):
+        self.verify_session()
+        data=self.get('/markets/'+identifier(epic))
+        try:
+            ins,snap=data['instrument'],data['snapshot']
+            if (ins['epic']!=epic or ins['type'] not in TYPES or ins['currency']!='USD'
+                    or number(ins['lotSize'])!=1 or number(snap['scalingFactor'])!=1):
+                raise CapitalError('Unsupported market data contract')
+            if snap['marketStatus']!='TRADEABLE' or 'REGULAR' not in snap['marketModes'] or number(snap['delayTime'])!=0:
+                raise CapitalError('Closed, restricted or delayed market')
+            bid,ask=number(snap['bid'],True),number(snap['offer'],True)
+            if ask<bid:
+                raise CapitalError('Invalid executable spread')
+            if 'updateTimeUTC' in snap:
+                from .candles import utc_stamp
+                stamp=utc_stamp(snap['updateTimeUTC'])
+            else:
+                dt=datetime.fromisoformat(snap['updateTime'])
+                if dt.tzinfo is not None:
+                    raise CapitalError('Unexpected local quote timestamp')
+                stamp=dt.replace(tzinfo=timezone.utc).timestamp()-self.offset*3600
+            fresh(stamp,self.clock(),30,'market quote')
+            return dict(epic=epic,bid=bid,ask=ask,quote_time=stamp)
+        except (KeyError,TypeError,ValueError,OverflowError):
+            raise CapitalError('Invalid market quote response') from None
 
     def snapshot(self, epic):
         with self.lock:
