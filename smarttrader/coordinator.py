@@ -87,6 +87,9 @@ class DemoCoordinator:
                         'status TEXT NOT NULL, plan TEXT NOT NULL, deal TEXT, reference TEXT)')
         if 'reference' not in {row[1] for row in self.db.execute('PRAGMA table_info(smart_entries)')}:
             self.db.execute('ALTER TABLE smart_entries ADD COLUMN reference TEXT')
+        self.db.execute('CREATE TABLE IF NOT EXISTS smart_exits ('
+                        'deal TEXT PRIMARY KEY, account TEXT NOT NULL, status TEXT NOT NULL, '
+                        'reason TEXT NOT NULL, reference TEXT)')
         self.db.commit()
 
     def close(self):
@@ -105,6 +108,8 @@ class DemoCoordinator:
         plan = plan_entry(recommendation, context, snapshot, now)
         if plan is None:
             return {'status': 'wait'}
+        if self.unresolved():
+            raise CoordinationError('Unresolved order; review required')
         if armed is not True:
             return {'status': 'preview', 'plan': plan}
         signal = hashlib.sha256((self.account_id+'\0'+context['epic']+'\0'+signal_id).encode()).hexdigest()
@@ -143,3 +148,71 @@ class DemoCoordinator:
             self.db.execute('UPDATE smart_entries SET status=? WHERE signal=?', ('uncertain', signal))
             self.db.commit()
             raise CoordinationError('Order outcome uncertain; reconcile before further entries') from None
+
+    def owned(self):
+        return {deal:json.loads(plan) for deal,plan in self.db.execute(
+            "SELECT deal,plan FROM smart_entries WHERE account=? AND status='confirmed'",(self.account_id,))}
+
+    def unresolved(self):
+        return bool(self.db.execute("SELECT 1 FROM smart_entries WHERE account=? AND status IN ('pending','uncertain')",
+                    (self.account_id,)).fetchone() or self.db.execute(
+                    "SELECT 1 FROM smart_exits WHERE account=? AND status IN ('pending','uncertain')",(self.account_id,)).fetchone())
+
+    def reconcile(self, state):
+        if str(state.get('account_id')) != self.account_id or not isinstance(state.get('positions'),list):
+            raise CoordinationError('Account reconciliation mismatch')
+        owned = self.owned()
+        actual = {x['position']['dealId']:x for x in state['positions']}
+        if len(actual)!=len(state['positions']):
+            raise CoordinationError('Duplicate position identifiers')
+        with self.db:
+            for deal in owned.keys()-actual.keys():
+                # Broker stop/target/external close: do not invent a realized P/L.
+                self.db.execute("UPDATE smart_entries SET status='closed' WHERE account=? AND deal=?",
+                                (self.account_id,deal))
+        changed = []
+        for deal in owned.keys() & actual.keys():
+            pos, market = actual[deal]['position'],actual[deal]['market']
+            plan=owned[deal]
+            if pos['size']!=plan['size'] or pos['direction']!=plan['direction'] or market['epic']!=plan['epic']:
+                changed.append(deal)
+        return dict(owned={k:v for k,v in owned.items() if k in actual and k not in changed},
+                    unknown=sorted(actual.keys()-owned.keys()),changed=changed,
+                    unresolved=self.unresolved())
+
+    def close_position(self, deal, reason, broker, armed=False):
+        plan=self.owned().get(deal)
+        if not plan or broker.environment!='demo' or str(broker.account_id)!=self.account_id:
+            raise CoordinationError('Close ownership or account mismatch')
+        if armed is not True:
+            return dict(status='close_preview',deal_id=deal,reason=reason)
+        if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached'}:
+            raise CoordinationError('Exit evidence is not independently validated')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            if self.db.execute('SELECT 1 FROM smart_exits WHERE deal=?',(deal,)).fetchone():
+                self.db.rollback()
+                return dict(status='close_already_reserved',deal_id=deal)
+            self.db.execute('INSERT INTO smart_exits(deal,account,status,reason) VALUES (?,?,?,?)',
+                            (deal,self.account_id,'pending',reason))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        try:
+            reference=broker.submit_close(deal,plan)
+            if not isinstance(reference,str) or not reference or len(reference)>256:
+                raise CoordinationError('Invalid close reference')
+            with self.db:
+                self.db.execute('UPDATE smart_exits SET reference=? WHERE deal=?',(reference,deal))
+            result=broker.confirm_close(reference,deal)
+            if result != dict(status='closed',account_id=self.account_id,deal_id=deal):
+                raise CoordinationError('Close outcome mismatch')
+            with self.db:
+                self.db.execute("UPDATE smart_exits SET status='closed' WHERE deal=?",(deal,))
+                self.db.execute("UPDATE smart_entries SET status='closed' WHERE account=? AND deal=?",(self.account_id,deal))
+            return result
+        except Exception:
+            with self.db:
+                self.db.execute("UPDATE smart_exits SET status='uncertain' WHERE deal=?",(deal,))
+            raise CoordinationError('Close outcome uncertain; no automatic resend') from None

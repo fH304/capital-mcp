@@ -1,6 +1,6 @@
 """Restricted Capital demo REST adapter. Source: https://open-api.capital.com/.
 
-USD CFD contracts with lot/scaling 1 only. This is not a deployable runner.
+USD CFD contracts with lot/scaling 1 only. The runner supplies persistent ownership and order reservations.
 Daily risk is supplied by a persistent controller, not by the AI model.
 """
 import json
@@ -58,14 +58,16 @@ class CapitalDemo:
         self.lock = threading.RLock()
         self.last_request = self.last_login = float('-inf')
         self.prepared, self.pending = None, {}
+        self._close_path = None
 
     def _request(self, method, path, payload=None):
-        # Fixed host; no account switching, preferences mutation, top-ups or closes.
+        # Fixed host; DELETE is enabled only inside verified submit_close.
         allowed = (method == 'GET' and (path in {'/session', '/accounts', '/positions', '/workingorders'}
                     or re.fullmatch(r'/(markets|positions|confirms)/[A-Za-z0-9_.:%-]+', path)))
         allowed = allowed or (method == 'POST' and path in {'/session', '/positions'})
         allowed = allowed or (method=='GET' and re.fullmatch(
             r'/prices/[A-Za-z0-9_.:%-]+\?resolution=(MINUTE_15|HOUR|HOUR_4)&max=([1-9]|[1-3][0-9]|40)',path))
+        allowed = allowed or (method == 'DELETE' and self.armed and path == self._close_path)
         if not allowed:
             raise CapitalError('Endpoint outside adapter scope')
         with self.lock:
@@ -307,3 +309,73 @@ class CapitalDemo:
                 raise CapitalError('Incomplete position confirmation') from None
             del self.pending[reference]
             return result
+
+    def account_state(self):
+        """Complete authenticated lists; never infer closure from a failed GET."""
+        self.verify_session()
+        accounts = self.get('/accounts').get('accounts')
+        if not isinstance(accounts, list):
+            raise CapitalError('Missing account list')
+        matches = [a for a in accounts if str(a.get('accountId')) == self.expected_account]
+        if len(matches) != 1 or any(matches[0].get(k) != v for k,v in
+                dict(currency='USD',status='ENABLED',accountType='CFD').items()):
+            raise CapitalError('Unsupported demo account')
+        try:
+            equity = number(matches[0]['balance']['balance'], True)
+            positions = self.get('/positions')['positions']
+            orders = self.get('/workingorders')['workingOrders']
+            if not isinstance(positions,list) or not isinstance(orders,list):
+                raise CapitalError('Incomplete account lists')
+            seen = set()
+            for item in positions:
+                pos, market = item['position'], item['market']
+                deal = pos['dealId']
+                identifier(deal)
+                identifier(market['epic'])
+                if deal in seen or pos['direction'] not in ('BUY','SELL'):
+                    raise CapitalError('Invalid position list')
+                number(pos['size'],True)
+                seen.add(deal)
+            daily = self.daily_controller(equity,self.clock())
+            if type(daily.get('stopped')) is not bool:
+                raise CapitalError('Invalid daily gate')
+            return dict(account_id=self.expected_account,positions=positions,
+                        working_orders=orders,equity=equity,daily=daily,observed_at=self.clock())
+        except (KeyError,TypeError):
+            raise CapitalError('Invalid account state') from None
+
+    def submit_close(self, deal_id, expected):
+        with self.lock:
+            if not self.armed or expected.get('account_id') != self.expected_account:
+                raise CapitalError('Unarmed or mismatched close')
+            state = self.account_state()
+            matches = [x for x in state['positions'] if x['position']['dealId']==deal_id]
+            if len(matches)!=1:
+                raise CapitalError('Expected position is not open')
+            pos, market = matches[0]['position'], matches[0]['market']
+            if (market['epic']!=expected['epic'] or pos['direction']!=expected['direction']
+                    or pos['size']!=expected['size'] or pos.get('currency')!='USD'
+                    or number(pos.get('contractSize'))!=1):
+                raise CapitalError('Close ownership mismatch')
+            # A protective stop can have been removed: closure remains allowed.
+            self.market_quote(expected['epic'])
+            self._close_path = '/positions/'+identifier(deal_id)
+            try:
+                reference = self._request('DELETE',self._close_path)[0].get('dealReference')
+                identifier(reference)
+                return reference
+            finally:
+                self._close_path = None
+
+    def confirm_close(self, reference, deal_id):
+        self.verify_session()
+        confirmation = self.get('/confirms/'+identifier(reference))
+        if confirmation.get('dealStatus') != 'ACCEPTED':
+            raise CapitalError('Close is not confirmed')
+        deals = confirmation.get('affectedDeals')
+        if not isinstance(deals,list) or len(deals)!=1 or deals[0].get('dealId')!=deal_id or deals[0].get('status')!='CLOSED':
+            raise CapitalError('Close confirmation mismatch')
+        state = self.account_state()
+        if any(x['position']['dealId']==deal_id for x in state['positions']):
+            raise CapitalError('Position remains open')
+        return dict(status='closed',account_id=self.expected_account,deal_id=deal_id)
