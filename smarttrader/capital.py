@@ -219,7 +219,7 @@ class CapitalDemo:
                             positions=positions, positions_time=positions_time, working_orders=orders,
                             orders_time=orders_time, contract_time=contract_time, bid=bid, ask=ask,
                             quote_time=quote_time, daily_stopped=daily['stopped'], daily_remaining_risk=remaining,
-                            tradeable=(snap['marketStatus']=='TRADEABLE' and 'REGULAR' in snap['marketModes']
+                            tradeable=(daily.get('ready',True) is True and snap['marketStatus']=='TRADEABLE' and 'REGULAR' in snap['marketModes']
                                        and number(snap['delayTime'])==0),
                             point_value=1, quote_to_account=1, margin_per_unit=ask*margin,
                             min_size=size_rule('minDealSize'), size_step=size_rule('minSizeIncrement'),

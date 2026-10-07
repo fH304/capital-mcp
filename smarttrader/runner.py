@@ -14,7 +14,7 @@ from pathlib import Path
 from .analysis import AnalysisClient, validate_context
 from .capital import CapitalDemo, identifier
 from .coordinator import DemoCoordinator
-from .daily import DailyRisk
+from .daily import DailyRisk, AdaptiveDailyRisk
 from .marketdata import MarketCollector
 from .monitor import EntryGate, Monitor, PositionView, exit_decision
 from .news import NewsClient, timestamp
@@ -41,9 +41,14 @@ class Config:
         self.legacy=env.get('BOT_STATE_PATH','/var/data/demo.sqlite')
         if not Path(self.legacy).is_absolute():
             raise ValueError('Legacy worker state path must be absolute')
-        self.limit=float(env['SMART_DAILY_LOSS_LIMIT'])
-        if not math.isfinite(self.limit) or self.limit<=0:
-            raise ValueError('Daily loss limit must be explicit and positive')
+        self.risk_mode=env.get('SMART_DAILY_RISK_MODE','fixed' if env.get('SMART_DAILY_LOSS_LIMIT') else 'auto')
+        if self.risk_mode not in {'auto','fixed'}:
+            raise ValueError('Invalid daily risk mode')
+        self.limit=None
+        if self.risk_mode=='fixed':
+            self.limit=float(env['SMART_DAILY_LOSS_LIMIT'])
+            if not math.isfinite(self.limit) or self.limit<=0:
+                raise ValueError('Daily loss limit must be positive')
         self.key,self.user,self.password=(env.get(k,'') for k in ('CAP_API_KEY','CAP_IDENTIFIER','CAP_API_PASSWORD'))
         self.ai_key,self.model,self.news_key=(env.get(k,'') for k in ('OPENAI_API_KEY','OPENAI_MODEL','EODHD_API_KEY'))
         if not all((self.key,self.user,self.password,self.ai_key,self.model,self.news_key)):
@@ -105,7 +110,8 @@ class Worker:
     def resources(self):
         if not hasattr(self.local,'journal'):
             c=self.config
-            self.local.daily=DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit)
+            self.local.daily=(AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols)
+                              if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
             self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account)
         if not getattr(self.local,'broker',None):
             c=self.config
@@ -174,8 +180,15 @@ class Worker:
                       for a in sorted(self.articles.get(epic,[]),key=lambda x:timestamp(x['published_utc']),reverse=True)
                       if 0<=self.clock()-timestamp(a['published_utc'])<=21600][:5]
         context=MarketCollector(broker,self.clock).collect_market(epic)
+        if self.config.risk_mode=='auto':
+            self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
+            state['daily']=self.local.daily(state['equity'],self.clock())
+            self.gate.stopped(state['daily']['stopped'])
+            self.emit('daily_risk_ready',mode='auto',limit=state['daily']['limit'],
+                      remaining=state['daily']['remaining'],stressed=state['daily']['stressed'],
+                      market_data_ready=state['daily']['ready'])
         self.emit('market_data_ready',epic=epic,closed_bars={k:len(v['candles']) for k,v in context['timeframes'].items()})
-        if not articles or state['positions'] or state['working_orders'] or reconciled['unresolved']:
+        if not articles or state['positions'] or state['working_orders'] or reconciled['unresolved'] or not state['daily'].get('ready',True):
             self.emit('entry_blocked',epic=epic,reason='news_or_account_gate')
             return True  # observations usable; no entry performed
         self.gate.success('opportunities',self.clock())

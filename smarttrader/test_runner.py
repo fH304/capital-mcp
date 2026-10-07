@@ -203,3 +203,14 @@ class WorkerTests(unittest.TestCase):
         broker,_=w.resources()
         with self.assertRaises(CapitalError):
             broker._request('DELETE','/positions/deal-1')
+
+    @patch('time.time',return_value=NOW)
+    def test_adaptive_worker_needs_no_fixed_dollar_limit(self,_):
+        del self.env['SMART_DAILY_LOSS_LIMIT']
+        self.env['SMART_DAILY_RISK_MODE']='auto'
+        w=self.make(True)
+        self.cycle(w)
+        self.assertIn('entry_confirmed',[e for e,_ in self.events])
+        adaptive=[fields for event,fields in self.events if event=='daily_risk_ready']
+        self.assertEqual(adaptive[-1]['limit'],10)
+        self.assertTrue(adaptive[-1]['market_data_ready'])

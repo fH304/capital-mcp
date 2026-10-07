@@ -20,7 +20,7 @@
 
 1. احتفظ بقرص /var/data وبإعداد BOT_STATE_PATH=/var/data/demo.sqlite. أوقف أي نسخة أخرى تكتب إلى الحساب. راجع الصفقات القديمة؛ النسخة الجديدة لن تتبناها.
 2. في Environment اربط مجموعة smart-bot-news إن لم تكن مرتبطة. أضف المتغيرات الواردة في RENDER_ENV.example. CAP_API_PASSWORD هي كلمة مرور مفتاح Capital، وليست بالضرورة كلمة مرور تسجيل الدخول. أدخل المفاتيح في Render فقط، ولا ترسلها في المحادثة. OPENAI_API_KEY يحتاج Write على Responses؛ رصيد منصة API منفصل عن اشتراك ChatGPT.
-3. اجعل SMART_MODE=preview. اضبط OPENAI_MODEL=gpt-4.1-mini-2025-04-14. النموذج يدعم Responses وStructured Outputs بحسب توثيق OpenAI. الحد SMART_DAILY_LOSS_LIMIT=250 يعبر عن الحد المختار بالدولار، ويمكن ضبطه قبل أول تشغيل؛ تغييره بعد بدء اليوم يستوجب مراجعة الحالة ولا يمسح السجل تلقائيًا.
+3. اجعل SMART_MODE=preview. اضبط OPENAI_MODEL=gpt-4.1-mini-2025-04-14. النموذج يدعم Responses وStructured Outputs بحسب توثيق OpenAI. اضبط SMART_DAILY_RISK_MODE=auto؛ لا يلزم إدخال مبلغ SMART_DAILY_LOSS_LIMIT في هذا الوضع. لا تغير السياسة خلال اليوم للتحايل على إيقاف الخسارة.
 4. Settings → Branch: smart-demo-integration. Dockerfile Path: smarttrader/Dockerfile. Docker Build Context Directory: . . Root Directory وDocker Command وPre-Deploy Command تبقى فارغة. الملف ينسخ smarttrader فقط ويشغّل python -B -m smarttrader.runner.
 5. Manual Deploy → Deploy latest commit. انتظر smart_worker_started مع mode=preview، ثم smart_heartbeat وnews_ready وmarket_data_ready. عند حساب خالٍ وأخبار صالحة ينتظر analysis_ready ثم entry_preview أو entry_wait. الإغلاق في المعاينة يظهر close_preview ولا يرسل DELETE. نجاح النشر وحده لا يثبت نجاح OpenAI أو التحليل.
 6. إذا ظهر RuntimeError عند البدء فراجع توقف العامل القديم وقفل القرص. لا تحذف ملف الحالة أو الأقفال أثناء تشغيل عامل. إذا ظهر account_review_required أو entry_blocked، راجع المراكز والأوامر والأخبار؛ لا تتجاوز الحاجز بتغيير الحساب.
@@ -48,3 +48,14 @@ python -B -m unittest discover -s smarttrader -t .
 - https://open-api.capital.com/
 - https://developers.openai.com/api/docs/models/gpt-4.1-mini
 - https://developers.openai.com/api/docs/guides/structured-outputs
+
+
+## حد الخسارة التلقائي التجريبي
+
+SMART_DAILY_RISK_MODE=auto يلغي الحاجة إلى مبلغ ثابت. عند أول رصد في كل يوم UTC يسجل قيمة الحساب، ويضع سقفًا يوميًا قدره 1% منها. الحد الفعلي لا يتجاوز أيضًا 1% من القيمة الحالية، ويخفض إلى 0.5% عند ارتفاع التقلب. الأرباح أو هدوء السوق لا يعيدان رفع الحد خلال اليوم؛ يعاد حساب أساس جديد في اليوم التالي. هذه قيم سياسة تجريبية ثابتة كنسب، وليست تحسينًا مثبتًا أو حكمًا للنموذج عن تحمل العميل للخسارة.
+
+التقلب يحسب من شموع M15 المكتملة والمتحققة: متوسط المدى الحقيقي النسبي لأحدث خمس شموع مقابل وسيط العشر السابقة. ارتفاع النسبة إلى 1.5 أو أكثر يخفض السقف. هذا مقياس متأخر ولا يتنبأ بخبر أو فجوة. يجب توفر رصد عمره حتى 300 ثانية لكل سوق في الخريطة قبل دخول جديد. غياب الرصد يمنع الدخول، وتستمر حماية المراكز المعروفة؛ مراقبة الأخبار لا ترفع الميزانية.
+
+مثال توضيحي: أساس يومي 1000 دولار يعطي سقفًا أوليًا حتى 10 دولارات، أو 5 عند ارتفاع التقلب. الخسارة المحققة والعائمة تنعكس في قيمة الحساب وتنقص المتبقي. الوصول إلى السقف يوقف الدخول ويطلب إغلاق المراكز المملوكة عند توفر التنفيذ. السقف لا يضمن حدًا فعليًا للخسارة بسبب الانزلاق أو تعذر الاتصال. مخاطرة الصفقة الحالية لا تزال حتى 0.125% من قيمة الحساب وبحد المتبقي اليومي؛ لم تُرفع الرافعة أو المخاطرة بسبب ثقة النموذج.
+
+تُحفظ السياسة والأساس والسقف والإيقاف في SQLite. الانتقال من حد ثابت محفوظ إلى auto يحمل أساس اليوم وإيقافه ويختار السقف الأصغر؛ لا يعيد ضبط الخسارة. العودة إلى fixed خلال يوم auto أو تغيير قائمة الأسواق يتطلب مراجعة صريحة. لملفات fixed القديمة يستمر التوافق: وجود SMART_DAILY_LOSS_LIMIT دون تحديد الوضع يعني fixed؛ لذلك اضبط auto صراحةً.
