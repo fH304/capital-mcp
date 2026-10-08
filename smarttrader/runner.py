@@ -20,6 +20,7 @@ from .monitor import EntryGate, Monitor, PositionView, exit_decision
 from .news import NewsClient, timestamp
 from .universe import MARKETS, relevant_articles, rank
 from .schedule import MarketSchedule
+from .trial import APPROVED_ACCOUNT, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
 
 
 def log(event, **fields):
@@ -58,12 +59,21 @@ class Config:
         self.broad=env.get('SMART_MARKETS','single')=='broad'
         if env.get('SMART_MARKETS','single') not in {'single','broad'}:
             raise ValueError('SMART_MARKETS must be single or broad')
-        # Publishing the optional feature must not increase paid API usage on
-        # an existing service. Continuous analysis requires explicit activation.
+        # This account's 72h/$20 trial was explicitly authorized on 2026-10-08.
+        # Other accounts keep the previous defaults. Restart never renews it.
+        trial_flag=env.get('SMART_TRIAL_ENABLED','1' if self.account==APPROVED_ACCOUNT and self.broad else '0')
+        if trial_flag not in {'0','1'}:
+            raise ValueError('SMART_TRIAL_ENABLED must be 0 or 1')
+        self.trial=trial_flag=='1'
+        if self.trial and (self.account!=APPROVED_ACCOUNT or not self.broad):
+            raise ValueError('Trial is authorized for the approved broad demo account only')
         self.analysis_mode=env.get('SMART_ANALYSIS_MODE','budgeted')
         if self.analysis_mode not in {'continuous','budgeted'}:
             raise ValueError('Invalid analysis mode')
-        self.continuous=self.analysis_mode=='continuous'
+        if self.trial:
+            self.analysis_mode='trial'
+            self.model=TRIAL_MODEL  # fixed model and verified token tariff
+        self.continuous=self.analysis_mode in {'continuous','trial'}
         # Continuous monitoring is explicitly independent of the old account
         # quota, including an existing SMART_AI_CALLS_PER_DAY=4 deployment.
         self.calls=None if self.continuous else int(env.get('SMART_AI_CALLS_PER_DAY','4'))
@@ -72,6 +82,8 @@ class Config:
         self.analysis_interval=int(env.get('SMART_ANALYSIS_INTERVAL_SECONDS','0'))
         if not 0<=self.analysis_interval<=86400:
             raise ValueError('Invalid per-market analysis interval')
+        if self.trial:
+            self.analysis_interval=0
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
         if not isinstance(self.symbols,dict) or not 1<=len(self.symbols)<=32:
@@ -110,6 +122,31 @@ class Worker:
         self.ai_factory,self.news_factory=ai_factory,news_factory
         self.rotation=0
         self.candidates={}
+        self.trial_stop_logged=False
+        if config.trial:
+            original_emit=self.emit
+            def trial_emit(event,**fields):
+                original_emit(event,**fields)
+                try:
+                    self.trial_budget().record(event,fields)
+                except sqlite3.Error:
+                    original_emit('trial_metrics_failed')
+            self.emit=trial_emit
+            self.emit('trial_started',**self.trial_budget().status(self.clock()))
+
+    def trial_budget(self):
+        if not hasattr(self.local,'trial'):
+            self.local.trial=TrialBudget(str(self.config.directory/'trial.sqlite'),self.config.account,self.clock())
+        return self.local.trial
+
+    def trial_active(self):
+        if not self.config.trial:
+            return True
+        status=self.trial_budget().status(self.clock())
+        if not status['trial_active'] and not self.trial_stop_logged:
+            self.trial_stop_logged=True
+            self.emit('trial_stopped',**self.trial_budget().summary(self.clock()))
+        return status['trial_active']
 
     def paced_open(self,request,timeout):
         from urllib.request import build_opener
@@ -123,6 +160,9 @@ class Worker:
                 self.next_login=scheduled+1.1
             self.next_request=scheduled+.15
         time.sleep(max(0,scheduled-time.monotonic()))
+        if (self.config.trial and request.get_method()=='POST'
+                and request.full_url.endswith('/positions')):
+            self.trial_budget().require_entry(self.clock())
         return build_opener(NoRedirect()).open(request,timeout=timeout)
 
     def resources(self):
@@ -136,7 +176,8 @@ class Worker:
             c=self.config
             broker=(self.broker_factory(self.local.daily) if self.broker_factory else
                 CapitalDemo(key=c.key,user=c.user,password=c.password,account_id=c.account,
-                            daily_controller=self.local.daily,armed=c.armed,opener=self.paced_open))
+                            daily_controller=self.local.daily,armed=c.armed,opener=self.paced_open,
+                            entry_guard=(lambda:self.trial_budget().require_entry(self.clock())) if c.trial else None))
             broker.login()
             self.local.broker=broker
         return self.local.broker,self.local.journal
@@ -144,7 +185,16 @@ class Worker:
     def positions(self):
         broker,journal=self.resources()
         state=broker.account_state()
+        previously_owned=journal.owned() if self.config.trial else {}
         reconciled=journal.reconcile(state)
+        if self.config.trial:
+            actual_ids={item['position']['dealId'] for item in state['positions']}
+            for deal in previously_owned.keys()-actual_ids:
+                self.emit('position_closed_observed',deal_id=deal,epic=previously_owned[deal]['epic'])
+            try:
+                self.trial_budget().observe_account(self.clock(),state['equity'],len(state['positions']))
+            except sqlite3.Error:
+                self.emit('trial_metrics_failed')
         self.gate.stopped(state['daily']['stopped'])
         usable=not (reconciled['unknown'] or reconciled['changed'] or reconciled['unresolved'] or state['working_orders'])
         if not usable:
@@ -171,6 +221,9 @@ class Worker:
                   open_positions=len(state['positions']),daily_stopped=state['daily']['stopped'],
                   analysis_mode=self.config.analysis_mode,markets=len(self.config.symbols),
                   daily_analysis_cap=self.config.calls)
+        if self.config.trial:
+            self.emit('trial_status',**self.trial_budget().status(self.clock()))
+            self.trial_active()
         return usable
 
     def news(self):
@@ -192,6 +245,8 @@ class Worker:
             return any(self.articles.values())
 
     def opportunities(self):
+        if not self.trial_active():
+            return True  # protection runs independently; no automatic fallback
         if self.config.broad:
             return self.broad_opportunities()
         broker,journal=self.resources()
@@ -238,7 +293,7 @@ class Worker:
             if self.rotation%len(epics)==0:
                 values=sorted(self.candidates.items(),key=lambda item:(-item[1]['score'],item[0]))
                 self.emit('universe_ranked',scanned=len(epics),available=len(values),
-                          analysis_mode='continuous',
+                          analysis_mode=self.config.analysis_mode,
                           top=[dict(epic=e,score=v['score']) for e,v in values[:5]])
             return True
         # Complete a sweep before selecting. One unavailable/closed contract
@@ -276,6 +331,8 @@ class Worker:
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
 
     def monitor_market(self,epic,context,scoring,articles=None):
+        if not self.trial_active():
+            return True
         if articles is None:
             with self.feed_lock:
                 articles=relevant_articles(epic,self.articles.get(epic,[]),self.clock())
@@ -287,24 +344,29 @@ class Worker:
             c=self.config
             self.local.ai=(self.ai_factory() if self.ai_factory else
                            AnalysisClient(c.ai_key,c.model,str(c.directory/'analysis.sqlite'),
-                                          daily_calls=None,allow_missing_news=True))
+                                          daily_calls=None,allow_missing_news=True,
+                                          trial=self.trial_budget() if c.trial else None))
         if not hasattr(self.local,'schedule'):
             self.local.schedule=MarketSchedule(str(self.config.directory/'scans.sqlite'),
                                                self.config.account,self.config.analysis_interval)
         candle=context['timeframes']['MINUTE_15']['candles'][-1]['t']
         reservation=self.local.schedule.reserve(epic,candle,self.clock())
         if not reservation['reserved']:
-            self.emit('analysis_scheduled',epic=epic,analysis_mode='continuous',
+            self.emit('analysis_scheduled',epic=epic,analysis_mode=self.config.analysis_mode,
                       scheduling='per_market',next_at=reservation['next_at'],reason=reservation['reason'])
             return True
-        self.emit('analysis_started',epic=epic,analysis_mode='continuous',candle=candle,
+        self.emit('analysis_started',epic=epic,analysis_mode=self.config.analysis_mode,candle=candle,
                   news_articles=len(articles),execution_supported=context.get('execution_supported',True))
         try:
             result=self.local.ai.analyze(context)
             validate_recommendation(result,context,self.clock(),allow_missing_news=True)
+        except TrialStopped:
+            self.local.schedule.finish(epic,candle,'failed')
+            self.trial_active()
+            return True
         except Exception as error:
             self.local.schedule.finish(epic,candle,'failed')
-            fields=dict(epic=epic,analysis_mode='continuous',error_type=type(error).__name__)
+            fields=dict(epic=epic,analysis_mode=self.config.analysis_mode,error_type=type(error).__name__)
             # Only the fixed HTTP status label is exposed, never request URLs,
             # credentials, model bodies, or arbitrary exception text.
             if isinstance(error,AnalysisError) and str(error).startswith('OpenAI HTTP status '):
@@ -312,7 +374,7 @@ class Worker:
             self.emit('analysis_failed',**fields)
             return True
         self.local.schedule.finish(epic,candle,'done')
-        self.emit('analysis_ready',epic=epic,analysis_mode='continuous',action=result['action'],
+        self.emit('analysis_ready',epic=epic,analysis_mode=self.config.analysis_mode,action=result['action'],
                   assessment=result['assessment'],reason=result['reason'],news_articles=len(articles))
         if result['action']=='WAIT':
             self.emit('entry_wait',epic=epic)
@@ -328,6 +390,8 @@ class Worker:
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal,recommendation=result)
 
     def evaluate(self,epic,context,articles,state,reconciled,broker,journal,recommendation=None):
+        if not self.trial_active():
+            return True
         if self.config.risk_mode=='auto':
             self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
             state['daily']=self.local.daily(state['equity'],self.clock())
@@ -346,6 +410,8 @@ class Worker:
         context['articles']=articles
         validate_context(context,self.clock())
         if recommendation is not None:
+            if not self.trial_active():
+                return True
             outcome=journal.process(str(context['timeframes']['MINUTE_15']['candles'][-1]['t']),
                                     recommendation,context,broker,armed=self.config.armed)
             self.emit('entry_'+outcome['status'],epic=epic,**{k:v for k,v in outcome.items() if k!='status'})

@@ -10,13 +10,19 @@ SMART_MODE=preview
 SMART_MARKETS=broad
 SMART_DAILY_RISK_MODE=auto
 # Optional legacy fixed mode: SMART_DAILY_RISK_MODE=fixed, SMART_DAILY_LOSS_LIMIT=<USD>
+SMART_TRIAL_ENABLED=1
+# Authorized account above + broad: one persistent 72-hour/$20 OpenAI trial.
+# Starts on first worker launch; restart/redeploy never renews time or spend.
+# Trial overrides legacy daily cap/spacing and pins gpt-4.1-mini-2025-04-14.
+# At expiry/exhaustion: no paid analysis/new entries; position protection stays on.
+# Set SMART_TRIAL_ENABLED=0 to opt out. Other accounts default to disabled.
 SMART_ANALYSIS_MODE=budgeted
 SMART_AI_CALLS_PER_DAY=4
 SMART_ANALYSIS_INTERVAL_SECONDS=0
-# Existing services retain their paid API limit until continuous is explicitly enabled.
-# After approving paid usage, choose SMART_ANALYSIS_MODE=continuous.
+# Outside the authorized trial, existing services retain their paid API limit.
+# SMART_ANALYSIS_MODE=continuous without the trial has no dollar/time cap.
 # Continuous: each available market gets one AI attempt per new closed M15 bar.
-# No account-wide daily AI cap; old SMART_AI_CALLS_PER_DAY=4 is ignored here.
+# Trial and continuous ignore old SMART_AI_CALLS_PER_DAY=4.
 # 0 adds no extra cooldown; a positive interval applies independently per market.
 # Budgeted mode retains the old shared cap and account spacing.
 SMART_NEWS_SYMBOLS={"EURUSD":"EURUSD.FOREX"}

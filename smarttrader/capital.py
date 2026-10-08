@@ -42,7 +42,7 @@ class CapitalDemo:
 
     def __init__(self, *, key, user, password, account_id, daily_controller,
                  environment='demo', armed=False, opener=None, clock=time.time,
-                 sleep=time.sleep):
+                 sleep=time.sleep, entry_guard=None):
         if environment != 'demo':
             raise CapitalError('Live endpoint is unavailable in this adapter')
         if not all(isinstance(x, str) and x for x in (key, user, password, account_id)):
@@ -54,6 +54,7 @@ class CapitalDemo:
         self.daily_controller, self.armed = daily_controller, armed is True
         self.opener = opener or build_opener(NoRedirect()).open
         self.clock, self.sleep = clock, sleep
+        self.entry_guard = entry_guard
         self.headers, self.offset = {}, None
         self.lock = threading.RLock()
         self.last_request = self.last_login = float('-inf')
@@ -79,6 +80,8 @@ class CapitalDemo:
             self.last_request = self.clock()
             if path == '/session' and method == 'POST':
                 self.last_login = self.last_request
+            if method == 'POST' and path == '/positions' and self.entry_guard:
+                self.entry_guard()  # before HTTP, after any local pacing delay
             request = Request(BASE+path, method=method,
                               data=json.dumps(payload, allow_nan=False).encode() if payload is not None else None,
                               headers={'Content-Type':'application/json', 'X-CAP-API-KEY':self.key, **self.headers})

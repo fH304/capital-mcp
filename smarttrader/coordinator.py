@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .analysis import validate_recommendation
 from .policy import assessed_size
+from .trial import TrialEntryBlocked
 
 
 class CoordinationError(RuntimeError):
@@ -144,6 +145,12 @@ class DemoCoordinator:
                             ('confirmed', str(confirmation['deal_id']), signal))
             self.db.commit()
             return {'status': 'confirmed', 'deal_id': str(confirmation['deal_id']), 'plan': plan}
+        except TrialEntryBlocked as error:
+            # This exception is raised only by the pre-HTTP entry guard.
+            # It proves no POST was sent; it is not a broker rejection.
+            self.db.execute('UPDATE smart_entries SET status=? WHERE signal=?', ('blocked',signal))
+            self.db.commit()
+            return dict(status='blocked',reason=str(error))
         except Exception:
             self.db.execute('UPDATE smart_entries SET status=? WHERE signal=?', ('uncertain', signal))
             self.db.commit()

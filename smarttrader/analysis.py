@@ -116,13 +116,14 @@ def validate_recommendation(result, context, now, *, allow_missing_news=False):
 
 
 class AnalysisClient:
-    def __init__(self, key, model, path, daily_calls=4, opener=None, *, allow_missing_news=False):
+    def __init__(self, key, model, path, daily_calls=4, opener=None, *, allow_missing_news=False, trial=None):
         if not key or not model:
             raise AnalysisError('Set OPENAI_API_KEY and OPENAI_MODEL')
         if daily_calls is not None and (type(daily_calls) is not int or not 1 <= daily_calls <= 24):
             raise AnalysisError('Invalid daily analysis call cap')
         self.key, self.model, self.daily_calls = key, model, daily_calls
         self.allow_missing_news = allow_missing_news
+        self.trial = trial
         self.opener = opener or build_opener(NoRedirect()).open
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=10)
@@ -137,6 +138,8 @@ class AnalysisClient:
         data = json.dumps(context, allow_nan=False)
         if len(data.encode()) > 30000:
             raise AnalysisError('Analysis input exceeds size cap')
+        # The full worst-case model charge is persisted BEFORE any paid HTTP.
+        charge_id = self.trial.reserve(context['epic'],self.model,now) if self.trial else None
         day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -158,6 +161,8 @@ class AnalysisClient:
                                    'Content-Type': 'application/json'})
         try:
             # No automatic retry: failed calls still consume the local reservation.
+            if self.trial:
+                self.trial.require_active(now if fixed_clock else time.time())
             with self.opener(request, timeout=25) as response:
                 raw = response.read(200001)
             if len(raw) > 200000:
@@ -169,6 +174,8 @@ class AnalysisClient:
             raise AnalysisError('OpenAI network failure') from None
         except (UnicodeError, ValueError):
             raise AnalysisError('Invalid API JSON') from None
+        if self.trial:
+            self.trial.settle(charge_id,response)
         if not isinstance(response, dict) or response.get('status') != 'completed':
             raise AnalysisError('Analysis incomplete or failed')
         try:
