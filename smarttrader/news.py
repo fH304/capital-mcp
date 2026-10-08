@@ -104,7 +104,10 @@ class NewsClient:
         except Exception:
             self.db.rollback()
             raise
-        query = urlencode({'s': symbol, 'limit': 20, 'api_token': self.token, 'fmt': 'json'})
+        parameters={'limit':100 if symbol=='__GENERAL__' else 20, 'api_token':self.token, 'fmt':'json'}
+        if symbol!='__GENERAL__':
+            parameters['s']=symbol
+        query = urlencode(parameters)
         request = Request('https://eodhd.com/api/news?' + query, headers={'Accept': 'application/json'})
         try:
             with self.opener(request, timeout=20) as response:

@@ -134,12 +134,18 @@ class CapitalDemo:
             raise CapitalError('Invalid historical prices response')
         return rows
 
+    def observation_quote(self,epic):
+        return self._market_quote(epic, observation_only=True)
+
     def market_quote(self,epic):
+        return self._market_quote(epic, observation_only=False)
+
+    def _market_quote(self,epic,observation_only):
         self.verify_session()
         data=self.get('/markets/'+identifier(epic))
         try:
             ins,snap=data['instrument'],data['snapshot']
-            if (ins['epic']!=epic or ins['type'] not in TYPES or ins['currency']!='USD'
+            if (ins['epic']!=epic or ins['type'] not in TYPES or (not observation_only and ins['currency']!='USD')
                     or number(ins['lotSize'])!=1 or number(snap['scalingFactor'])!=1):
                 raise CapitalError('Unsupported market data contract')
             if snap['marketStatus']!='TRADEABLE' or 'REGULAR' not in snap['marketModes'] or number(snap['delayTime'])!=0:
@@ -156,7 +162,8 @@ class CapitalDemo:
                     raise CapitalError('Unexpected local quote timestamp')
                 stamp=dt.replace(tzinfo=timezone.utc).timestamp()-self.offset*3600
             fresh(stamp,self.clock(),30,'market quote')
-            return dict(epic=epic,bid=bid,ask=ask,quote_time=stamp)
+            return dict(epic=epic,bid=bid,ask=ask,quote_time=stamp,
+                        execution_supported=ins['currency']=='USD', quote_currency=ins['currency'])
         except (KeyError,TypeError,ValueError,OverflowError):
             raise CapitalError('Invalid market quote response') from None
 

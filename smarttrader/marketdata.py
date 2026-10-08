@@ -11,16 +11,19 @@ class MarketCollector:
 
     def collect_market(self,epic):
         # Initial quote avoids historical requests for closed/restricted markets.
-        self.broker.market_quote(epic)
+        quote_method=getattr(self.broker,'observation_quote',self.broker.market_quote)
+        quote_method(epic)
         histories={resolution:self.broker.prices(epic,resolution,40) for resolution in RESOLUTIONS}
         # Refresh executable quote AFTER all historical requests.
-        quote=self.broker.market_quote(epic)
+        quote=quote_method(epic)
         now=self.clock()
         frames={resolution:normalize_candles(rows,resolution,now) for resolution,rows in histories.items()}
         validate_frames(frames,now)
         fresh(quote['quote_time'],now,30,'collected quote')
         return dict(epic=epic,bid=quote['bid'],ask=quote['ask'],quote_time=quote['quote_time'],
                      collected_at=now,timeframes=frames,
+                     execution_supported=quote.get('execution_supported',True),
+                     quote_currency=quote.get('quote_currency','USD'),
                      price_basis='candles are bid/ask midpoints; quote bid/ask are executable',
                      volume_basis='optional Capital lastTradedVolume; not asserted as global exchange volume')
 

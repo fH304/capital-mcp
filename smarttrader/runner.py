@@ -12,12 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .analysis import AnalysisClient, validate_context
-from .capital import CapitalDemo, identifier
+from .capital import CapitalDemo, CapitalError, identifier
 from .coordinator import DemoCoordinator
 from .daily import DailyRisk, AdaptiveDailyRisk
 from .marketdata import MarketCollector
 from .monitor import EntryGate, Monitor, PositionView, exit_decision
 from .news import NewsClient, timestamp
+from .universe import MARKETS, relevant_articles, rank
 
 
 def log(event, **fields):
@@ -56,9 +57,13 @@ class Config:
         self.calls=int(env.get('SMART_AI_CALLS_PER_DAY','4'))
         if not 1<=self.calls<=24:
             raise ValueError('Invalid API request cap')
-        self.symbols=json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}'))
-        if not isinstance(self.symbols,dict) or not 1<=len(self.symbols)<=4:
-            raise ValueError('One to four verified news mappings required')
+        self.broad=env.get('SMART_MARKETS','single')=='broad'
+        if env.get('SMART_MARKETS','single') not in {'single','broad'}:
+            raise ValueError('SMART_MARKETS must be single or broad')
+        self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
+                      json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
+        if not isinstance(self.symbols,dict) or not 1<=len(self.symbols)<=32:
+            raise ValueError('One to 32 news mappings required')
         for epic,symbol in self.symbols.items():
             identifier(epic)
             identifier(symbol)
@@ -92,6 +97,7 @@ class Worker:
         self.broker_factory=broker_factory
         self.ai_factory,self.news_factory=ai_factory,news_factory
         self.rotation=0
+        self.candidates={}
 
     def paced_open(self,request,timeout):
         from urllib.request import build_opener
@@ -110,7 +116,8 @@ class Worker:
     def resources(self):
         if not hasattr(self.local,'journal'):
             c=self.config
-            self.local.daily=(AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols)
+            self.local.daily=(AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols,
+                                               selected_market_only=c.broad)
                               if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
             self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account)
         if not getattr(self.local,'broker',None):
@@ -156,18 +163,23 @@ class Worker:
         if not hasattr(self.local,'news'):
             self.local.news=(self.news_factory() if self.news_factory else
                 NewsClient(self.config.news_key,str(self.config.directory/'news.sqlite')))
+        general=self.local.news.fetch('__GENERAL__') if self.config.broad else None
         for epic,symbol in self.config.symbols.items():
-            feed=self.local.news.fetch(symbol)
+            feed=general if general is not None else self.local.news.fetch(symbol)
             # A symbol-specific request alone is insufficient if article tags disagree.
-            articles=[a for a in feed['articles'] if symbol in a.get('symbols',[]) and
-                      0<=self.clock()-timestamp(a['published_utc'])<=21600]
+            articles=(relevant_articles(epic,feed['articles'],self.clock()) if self.config.broad else
+                      [a for a in feed['articles'] if symbol in a.get('symbols',[]) and
+                       0<=self.clock()-timestamp(a['published_utc'])<=21600])
             with self.feed_lock:
                 self.articles[epic]=articles
-            self.emit('news_ready',epic=epic,status=feed['status'],articles=len(articles))
+            self.emit('news_ready',epic=epic,status=feed['status'],articles=len(articles),
+                      feed_mode='general' if self.config.broad else 'symbol')
         with self.feed_lock:
             return any(self.articles.values())
 
     def opportunities(self):
+        if self.config.broad:
+            return self.broad_opportunities()
         broker,journal=self.resources()
         state=broker.account_state()
         reconciled=journal.reconcile(state)
@@ -180,6 +192,61 @@ class Worker:
                       for a in sorted(self.articles.get(epic,[]),key=lambda x:timestamp(x['published_utc']),reverse=True)
                       if 0<=self.clock()-timestamp(a['published_utc'])<=21600][:5]
         context=MarketCollector(broker,self.clock).collect_market(epic)
+        return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
+
+    def broad_opportunities(self):
+        broker,journal=self.resources()
+        epics=list(self.config.symbols)
+        epic=epics[self.rotation%len(epics)]
+        self.rotation+=1
+        try:
+            context=MarketCollector(broker,self.clock).collect_market(epic)
+            scoring=rank(context)
+            self.candidates[epic]=dict(context=context,**scoring)
+            if self.config.risk_mode=='auto':
+                self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
+            self.emit('market_scanned',epic=epic,asset_class=MARKETS[epic][0],
+                      score=scoring['score'],reason=scoring['reason'],
+                      execution_supported=context['execution_supported'],quote_currency=context['quote_currency'])
+        except Exception as error:
+            self.candidates.pop(epic,None)
+            self.emit('market_unavailable',epic=epic,error_type=type(error).__name__,
+                      reason=str(error) if isinstance(error,CapitalError) else 'invalid_or_unavailable_observations')
+        # Complete a sweep before selecting. One unavailable/closed contract
+        # must not prevent observation of the remaining markets.
+        if self.rotation%len(epics):
+            return True
+        state=broker.account_state()
+        reconciled=journal.reconcile(state)
+        self.gate.stopped(state['daily']['stopped'])
+        if state['positions'] or state['working_orders'] or reconciled['unresolved']:
+            self.emit('entry_blocked',reason='account_not_flat_or_unresolved')
+            return True
+        eligible=[]
+        with self.feed_lock:
+            for candidate,value in self.candidates.items():
+                ctx=value['context']
+                articles=relevant_articles(candidate,self.articles.get(candidate,[]),self.clock())
+                if (value['score']>0 and ctx['execution_supported'] and articles
+                        and 0<=self.clock()-ctx['collected_at']<=300):
+                    eligible.append((value['score'],candidate,articles))
+        eligible.sort(key=lambda item:(-item[0],item[1]))
+        self.emit('universe_ranked',scanned=len(epics),available=len(self.candidates),
+                  eligible=len(eligible),top=[dict(epic=e,score=s) for s,e,_ in eligible[:5]])
+        if not eligible:
+            self.emit('entry_blocked',reason='no_eligible_market_with_fresh_news')
+            return True
+        _,epic,articles=eligible[0]
+        # Cached scans rank candidates; fresh quotes and candles build the
+        # actual AI input and the broker independently checks the order again.
+        context=MarketCollector(broker,self.clock).collect_market(epic)
+        if self.config.risk_mode=='auto':
+            self.local.daily.activate(epic)
+        articles=[dict(a,title=a['title'][:500],content=a['content'][:1000])
+                  for a in sorted(articles,key=lambda a:timestamp(a['published_utc']),reverse=True)[:5]]
+        return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
+
+    def evaluate(self,epic,context,articles,state,reconciled,broker,journal):
         if self.config.risk_mode=='auto':
             self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
             state['daily']=self.local.daily(state['equity'],self.clock())
@@ -254,20 +321,28 @@ def main():
             raise ValueError('--once is available in preview only')
         lock=WorkerLock(config.legacy+'.lock')
         worker=Worker(config)
-        log('smart_worker_started',mode=config.mode,account_id=config.account)
+        log('smart_worker_started',mode=config.mode,account_id=config.account,
+            market_mode='broad' if config.broad else 'single',markets=len(config.symbols))
         if args.once:
             for name in ('positions','news','opportunities'):
-                usable=worker.job(name)()
-                if usable:
-                    worker.gate.success(name,time.time())
-                else:
-                    worker.gate.failure(name)
+                repeats=len(config.symbols) if config.broad and name=='opportunities' else 1
+                for i in range(repeats):
+                    if repeats>1 and i==repeats-1:
+                        if worker.job('positions')():
+                            worker.gate.success('positions',time.time())
+                        else:
+                            worker.gate.failure('positions')
+                    usable=worker.job(name)()
+                    if usable:
+                        worker.gate.success(name,time.time())
+                    else:
+                        worker.gate.failure(name)
             return
         stop=threading.Event()
         for sig in (signal.SIGTERM,signal.SIGINT):
             signal.signal(sig,lambda *_:stop.set())
         monitor=Monitor(worker.job('positions'),worker.job('opportunities'),worker.job('news'),log,
-                        gate=worker.gate,intervals=dict(positions=10,opportunities=60,news=60))
+                        gate=worker.gate,intervals=dict(positions=10,opportunities=5 if config.broad else 60,news=60))
         monitor.start()
         stop.wait()
         monitor.stop()

@@ -66,9 +66,11 @@ class AdaptiveDailyRisk:
     normalized true range is >=1.5 times its preceding median. Intraday limits
     can only decrease. Missing/stale market observations block new entries.
     """
-    def __init__(self, path, account_id, epics):
+    def __init__(self, path, account_id, epics, selected_market_only=False):
         self.account=str(account_id)
         self.epics=tuple(sorted(epics))
+        self.selected_market_only=selected_market_only
+        self.active_epic=None
         if not self.epics:
             raise ValueError('Adaptive policy requires markets')
         Path(path).parent.mkdir(parents=True,exist_ok=True)
@@ -83,6 +85,11 @@ class AdaptiveDailyRisk:
                 stressed INTEGER NOT NULL, ratio REAL NOT NULL, PRIMARY KEY(account,epic));
         ''')
         self.policy=json.dumps(dict(version=1,epics=self.epics),sort_keys=True)
+
+    def activate(self, epic):
+        if epic not in self.epics:
+            raise ValueError('Unexpected active risk market')
+        self.active_epic=epic
 
     def close(self):
         self.db.close()
@@ -113,7 +120,11 @@ class AdaptiveDailyRisk:
         try:
             row=self.db.execute('SELECT policy,day,baseline,ceiling,stopped FROM adaptive_daily WHERE account=?',
                                 (self.account,)).fetchone()
-            if row and (row[0]!=self.policy or day<row[1]):
+            compatible_change=False
+            if row and self.selected_market_only and row[0]!=self.policy:
+                old_policy=json.loads(row[0])
+                compatible_change=old_policy.get('version')==1 and isinstance(old_policy.get('epics'),list)
+            if row and ((row[0]!=self.policy and not compatible_change) or day<row[1]):
                 raise ValueError('Adaptive policy changed or clock moved backwards; review required')
             if row and row[1]==day:
                 baseline,ceiling,stopped=decimal(row[2],'baseline'),decimal(row[3],'ceiling'),bool(row[4])
@@ -131,8 +142,9 @@ class AdaptiveDailyRisk:
                     stopped=bool(old[3])
             observations={epic:(observed,stressed) for epic,observed,stressed in self.db.execute(
                 'SELECT epic,observed,stressed FROM risk_market WHERE account=?',(self.account,))}
-            ready=all(epic in observations and 0<=now-observations[epic][0]<=300 for epic in self.epics)
-            stressed=any(0<=now-t<=300 and high for t,high in observations.values())
+            required=(self.active_epic,) if self.selected_market_only else self.epics
+            ready=all(epic in observations and 0<=now-observations[epic][0]<=300 for epic in required)
+            stressed=any(epic in self.epics and 0<=now-t<=300 and high for epic,(t,high) in observations.items())
             rate=Decimal('.005') if stressed else Decimal('.01')
             ceiling=min(ceiling,min(baseline,equity)*rate)
             loss=max(Decimal(0),baseline-equity)
