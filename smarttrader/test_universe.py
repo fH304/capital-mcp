@@ -111,6 +111,7 @@ class BroadWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             env=dict(BOT_ACCOUNT_ID='demo-1',CAP_API_KEY='private',CAP_IDENTIFIER='private',CAP_API_PASSWORD='private',
                      OPENAI_API_KEY='private',OPENAI_MODEL='fixture',EODHD_API_KEY='private',SMART_MARKETS='broad',
+                     SMART_ANALYSIS_MODE='budgeted',
                      SMART_STATE_DIR=folder+'/state',BOT_STATE_PATH=folder+'/old.sqlite')
             cfg=Config(env)
             class MultiTransport(LiveStateTransport):

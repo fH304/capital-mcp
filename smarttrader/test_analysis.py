@@ -104,6 +104,31 @@ class AnalysisTests(unittest.TestCase):
                     client.analyze(context())
             client.db.close()
 
+    def test_continuous_client_counts_usage_without_legacy_daily_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            client=AnalysisClient('secret','model',d+'/ai.sqlite',daily_calls=None,
+                                  opener=lambda *a,**kw:Response())
+            day=datetime.fromtimestamp(NOW,timezone.utc).date().isoformat()
+            client.db.execute('INSERT INTO ai_budget VALUES(?,1000)',(day,))
+            client.db.commit()
+            try:
+                self.assertEqual(client.analyze(context(),NOW)['action'],'BUY')
+                self.assertEqual(client.db.execute('SELECT used FROM ai_budget').fetchone()[0],1001)
+            finally:
+                client.db.close()
+
+    def test_missing_news_monitoring_cannot_authorize_entry_or_fabricate_news(self):
+        from .test_universe import trending
+        ctx=dict(trending(),articles=[])
+        wait=dict(action='WAIT',assessment='reject',stop_level=0,target_level=0,
+                  reason='Technical trend observed; recent news is missing',article_ids=[])
+        self.assertEqual(validate_recommendation(wait,ctx,NOW,allow_missing_news=True)['action'],'WAIT')
+        with self.assertRaises(AnalysisError):
+            validate_recommendation(wait,ctx,NOW)
+        for result in (recommendation(),dict(wait,article_ids=['fabricated'])):
+            with self.assertRaises(AnalysisError):
+                validate_recommendation(result,ctx,NOW,allow_missing_news=True)
+
 
 if __name__ == '__main__':
     unittest.main()

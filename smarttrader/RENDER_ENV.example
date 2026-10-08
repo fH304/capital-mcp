@@ -10,9 +10,15 @@ SMART_MODE=preview
 SMART_MARKETS=broad
 SMART_DAILY_RISK_MODE=auto
 # Optional legacy fixed mode: SMART_DAILY_RISK_MODE=fixed, SMART_DAILY_LOSS_LIMIT=<USD>
+SMART_ANALYSIS_MODE=budgeted
 SMART_AI_CALLS_PER_DAY=4
-# Existing 4/day remains a shared limit, not 4 per market. Optional 24/day
-# gives at most one new analysis per hour, still sharing the persistent budget.
+SMART_ANALYSIS_INTERVAL_SECONDS=0
+# Existing services retain their paid API limit until continuous is explicitly enabled.
+# After approving paid usage, choose SMART_ANALYSIS_MODE=continuous.
+# Continuous: each available market gets one AI attempt per new closed M15 bar.
+# No account-wide daily AI cap; old SMART_AI_CALLS_PER_DAY=4 is ignored here.
+# 0 adds no extra cooldown; a positive interval applies independently per market.
+# Budgeted mode retains the old shared cap and account spacing.
 SMART_NEWS_SYMBOLS={"EURUSD":"EURUSD.FOREX"}
 # SMART_NEWS_SYMBOLS is used only when SMART_MARKETS=single.
 OPENAI_API_KEY=

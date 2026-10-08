@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .analysis import AnalysisClient, validate_context
+from .analysis import AnalysisClient, AnalysisError, validate_context, validate_recommendation
 from .capital import CapitalDemo, CapitalError, identifier
 from .coordinator import DemoCoordinator
 from .daily import DailyRisk, AdaptiveDailyRisk
@@ -19,6 +19,7 @@ from .marketdata import MarketCollector
 from .monitor import EntryGate, Monitor, PositionView, exit_decision
 from .news import NewsClient, timestamp
 from .universe import MARKETS, relevant_articles, rank
+from .schedule import MarketSchedule
 
 
 def log(event, **fields):
@@ -54,12 +55,23 @@ class Config:
         self.ai_key,self.model,self.news_key=(env.get(k,'') for k in ('OPENAI_API_KEY','OPENAI_MODEL','EODHD_API_KEY'))
         if not all((self.key,self.user,self.password,self.ai_key,self.model,self.news_key)):
             raise ValueError('Missing worker configuration')
-        self.calls=int(env.get('SMART_AI_CALLS_PER_DAY','4'))
-        if not 1<=self.calls<=24:
-            raise ValueError('Invalid API request cap')
         self.broad=env.get('SMART_MARKETS','single')=='broad'
         if env.get('SMART_MARKETS','single') not in {'single','broad'}:
             raise ValueError('SMART_MARKETS must be single or broad')
+        # Publishing the optional feature must not increase paid API usage on
+        # an existing service. Continuous analysis requires explicit activation.
+        self.analysis_mode=env.get('SMART_ANALYSIS_MODE','budgeted')
+        if self.analysis_mode not in {'continuous','budgeted'}:
+            raise ValueError('Invalid analysis mode')
+        self.continuous=self.analysis_mode=='continuous'
+        # Continuous monitoring is explicitly independent of the old account
+        # quota, including an existing SMART_AI_CALLS_PER_DAY=4 deployment.
+        self.calls=None if self.continuous else int(env.get('SMART_AI_CALLS_PER_DAY','4'))
+        if self.calls is not None and not 1<=self.calls<=24:
+            raise ValueError('Invalid API request cap')
+        self.analysis_interval=int(env.get('SMART_ANALYSIS_INTERVAL_SECONDS','0'))
+        if not 0<=self.analysis_interval<=86400:
+            raise ValueError('Invalid per-market analysis interval')
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
         if not isinstance(self.symbols,dict) or not 1<=len(self.symbols)<=32:
@@ -156,7 +168,9 @@ class Worker:
                 usable=False
                 self.emit('position_alert',deal_id=deal,reason=decision['reason'])
         self.emit('smart_heartbeat',mode=self.config.mode,equity=state['equity'],
-                  open_positions=len(state['positions']),daily_stopped=state['daily']['stopped'])
+                  open_positions=len(state['positions']),daily_stopped=state['daily']['stopped'],
+                  analysis_mode=self.config.analysis_mode,markets=len(self.config.symbols),
+                  daily_analysis_cap=self.config.calls)
         return usable
 
     def news(self):
@@ -192,6 +206,8 @@ class Worker:
                       for a in sorted(self.articles.get(epic,[]),key=lambda x:timestamp(x['published_utc']),reverse=True)
                       if 0<=self.clock()-timestamp(a['published_utc'])<=21600][:5]
         context=MarketCollector(broker,self.clock).collect_market(epic)
+        if self.config.continuous:
+            return self.monitor_market(epic,context,rank(context),articles)
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
 
     def broad_opportunities(self):
@@ -199,6 +215,7 @@ class Worker:
         epics=list(self.config.symbols)
         epic=epics[self.rotation%len(epics)]
         self.rotation+=1
+        observed=None
         try:
             context=MarketCollector(broker,self.clock).collect_market(epic)
             scoring=rank(context)
@@ -208,10 +225,22 @@ class Worker:
             self.emit('market_scanned',epic=epic,asset_class=MARKETS[epic][0],
                       score=scoring['score'],reason=scoring['reason'],
                       execution_supported=context['execution_supported'],quote_currency=context['quote_currency'])
+            observed=(context,scoring)
         except Exception as error:
             self.candidates.pop(epic,None)
             self.emit('market_unavailable',epic=epic,error_type=type(error).__name__,
                       reason=str(error) if isinstance(error,CapitalError) else 'invalid_or_unavailable_observations')
+        if self.config.continuous:
+            # Every observed market gets its own AI reservation, even when it
+            # ranks zero, has no news, or the account cannot accept a new entry.
+            if observed is not None:
+                self.monitor_market(epic,*observed)
+            if self.rotation%len(epics)==0:
+                values=sorted(self.candidates.items(),key=lambda item:(-item[1]['score'],item[0]))
+                self.emit('universe_ranked',scanned=len(epics),available=len(values),
+                          analysis_mode='continuous',
+                          top=[dict(epic=e,score=v['score']) for e,v in values[:5]])
+            return True
         # Complete a sweep before selecting. One unavailable/closed contract
         # must not prevent observation of the remaining markets.
         if self.rotation%len(epics):
@@ -246,7 +275,59 @@ class Worker:
                   for a in sorted(articles,key=lambda a:timestamp(a['published_utc']),reverse=True)[:5]]
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
 
-    def evaluate(self,epic,context,articles,state,reconciled,broker,journal):
+    def monitor_market(self,epic,context,scoring,articles=None):
+        if articles is None:
+            with self.feed_lock:
+                articles=relevant_articles(epic,self.articles.get(epic,[]),self.clock())
+        articles=[dict(a,title=a.get('title','')[:500],content=a.get('content','')[:1000])
+                  for a in sorted(articles,key=lambda a:timestamp(a['published_utc']),reverse=True)[:5]]
+        context=dict(context,articles=articles,purpose='market_monitoring')
+        validate_context(context,self.clock(),allow_missing_news=True)
+        if not hasattr(self.local,'ai'):
+            c=self.config
+            self.local.ai=(self.ai_factory() if self.ai_factory else
+                           AnalysisClient(c.ai_key,c.model,str(c.directory/'analysis.sqlite'),
+                                          daily_calls=None,allow_missing_news=True))
+        if not hasattr(self.local,'schedule'):
+            self.local.schedule=MarketSchedule(str(self.config.directory/'scans.sqlite'),
+                                               self.config.account,self.config.analysis_interval)
+        candle=context['timeframes']['MINUTE_15']['candles'][-1]['t']
+        reservation=self.local.schedule.reserve(epic,candle,self.clock())
+        if not reservation['reserved']:
+            self.emit('analysis_scheduled',epic=epic,analysis_mode='continuous',
+                      scheduling='per_market',next_at=reservation['next_at'],reason=reservation['reason'])
+            return True
+        self.emit('analysis_started',epic=epic,analysis_mode='continuous',candle=candle,
+                  news_articles=len(articles),execution_supported=context.get('execution_supported',True))
+        try:
+            result=self.local.ai.analyze(context)
+            validate_recommendation(result,context,self.clock(),allow_missing_news=True)
+        except Exception as error:
+            self.local.schedule.finish(epic,candle,'failed')
+            fields=dict(epic=epic,analysis_mode='continuous',error_type=type(error).__name__)
+            # Only the fixed HTTP status label is exposed, never request URLs,
+            # credentials, model bodies, or arbitrary exception text.
+            if isinstance(error,AnalysisError) and str(error).startswith('OpenAI HTTP status '):
+                fields['http_status']=int(str(error).rsplit(' ',1)[1])
+            self.emit('analysis_failed',**fields)
+            return True
+        self.local.schedule.finish(epic,candle,'done')
+        self.emit('analysis_ready',epic=epic,analysis_mode='continuous',action=result['action'],
+                  assessment=result['assessment'],reason=result['reason'],news_articles=len(articles))
+        if result['action']=='WAIT':
+            self.emit('entry_wait',epic=epic)
+            return True
+        if not context.get('execution_supported',True) or not articles or scoring['score']<=0:
+            self.emit('entry_blocked',epic=epic,reason='execution_news_or_technical_filter')
+            return True
+        broker,journal=self.resources()
+        if self.config.risk_mode=='auto':
+            self.local.daily.activate(epic)
+        state=broker.account_state()
+        reconciled=journal.reconcile(state)
+        return self.evaluate(epic,context,articles,state,reconciled,broker,journal,recommendation=result)
+
+    def evaluate(self,epic,context,articles,state,reconciled,broker,journal,recommendation=None):
         if self.config.risk_mode=='auto':
             self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
             state['daily']=self.local.daily(state['equity'],self.clock())
@@ -264,6 +345,11 @@ class Worker:
             return True
         context['articles']=articles
         validate_context(context,self.clock())
+        if recommendation is not None:
+            outcome=journal.process(str(context['timeframes']['MINUTE_15']['candles'][-1]['t']),
+                                    recommendation,context,broker,armed=self.config.armed)
+            self.emit('entry_'+outcome['status'],epic=epic,**{k:v for k,v in outcome.items() if k!='status'})
+            return True
         if not hasattr(self.local,'ai'):
             c=self.config
             self.local.ai=(self.ai_factory() if self.ai_factory else
@@ -322,7 +408,9 @@ def main():
         lock=WorkerLock(config.legacy+'.lock')
         worker=Worker(config)
         log('smart_worker_started',mode=config.mode,account_id=config.account,
-            market_mode='broad' if config.broad else 'single',markets=len(config.symbols))
+            market_mode='broad' if config.broad else 'single',markets=len(config.symbols),
+            analysis_mode=config.analysis_mode,daily_analysis_cap=config.calls,
+            analysis_interval_seconds=config.analysis_interval)
         if args.once:
             for name in ('positions','news','opportunities'):
                 repeats=len(config.symbols) if config.broad and name=='opportunities' else 1

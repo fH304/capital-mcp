@@ -38,10 +38,13 @@ at least 2 after spread. Cite supplied article IDs relevant to the assessment.
 CLOSE is only a recommendation for a supplied owned open position; never invent
 a position. Explain the concrete reason briefly. You cannot execute orders,
 change leverage, set risk budgets or assert that a profitable outcome is certain.
+For market_monitoring, still explain the technical observations when news is
+absent or execution_supported is false. In those cases return WAIT and explicitly
+state the missing news or observation-only contract; do not invent evidence.
 """
 
 
-def validate_context(context, now):
+def validate_context(context, now, *, allow_missing_news=False):
     if not isinstance(context, dict) or not isinstance(context.get('epic'), str):
         raise AnalysisError('Missing market context')
     bid, ask = context.get('bid'), context.get('ask')
@@ -51,8 +54,10 @@ def validate_context(context, now):
     if type(quote_time) not in (float, int) or not math.isfinite(quote_time) or not 0 <= now-quote_time <= 30:
         raise AnalysisError('Stale market context')
     articles = context.get('articles')
-    if not isinstance(articles, list) or not articles:
+    if not isinstance(articles, list) or (not articles and not allow_missing_news):
         raise AnalysisError('No usable news')
+    if allow_missing_news and not articles and 'timeframes' not in context:
+        raise AnalysisError('Technical monitoring requires validated timeframes')
     ids = set()
     for article in articles:
         try:
@@ -72,8 +77,8 @@ def validate_context(context, now):
     return ids
 
 
-def validate_recommendation(result, context, now):
-    ids = validate_context(context, now)
+def validate_recommendation(result, context, now, *, allow_missing_news=False):
+    ids = validate_context(context, now, allow_missing_news=allow_missing_news)
     if not isinstance(result, dict) or set(result) != set(PROPERTIES):
         raise AnalysisError('Invalid recommendation fields')
     if result['action'] not in PROPERTIES['action']['enum'] or result['assessment'] not in PROPERTIES['assessment']['enum']:
@@ -90,6 +95,8 @@ def validate_recommendation(result, context, now):
     action = result['action']
     if action != 'WAIT' and (not evidence or result['assessment'] == 'reject'):
         raise AnalysisError('Action lacks supporting evidence')
+    if allow_missing_news and context.get('execution_supported') is False and action != 'WAIT':
+        raise AnalysisError('Observation-only contract cannot produce an entry action')
     if action == 'CLOSE' and not context.get('owned_position'):
         raise AnalysisError('Cannot close an unowned or absent position')
     if action in ('BUY', 'SELL'):
@@ -109,12 +116,13 @@ def validate_recommendation(result, context, now):
 
 
 class AnalysisClient:
-    def __init__(self, key, model, path, daily_calls=4, opener=None):
+    def __init__(self, key, model, path, daily_calls=4, opener=None, *, allow_missing_news=False):
         if not key or not model:
             raise AnalysisError('Set OPENAI_API_KEY and OPENAI_MODEL')
-        if type(daily_calls) is not int or not 1 <= daily_calls <= 24:
+        if daily_calls is not None and (type(daily_calls) is not int or not 1 <= daily_calls <= 24):
             raise AnalysisError('Invalid daily analysis call cap')
         self.key, self.model, self.daily_calls = key, model, daily_calls
+        self.allow_missing_news = allow_missing_news
         self.opener = opener or build_opener(NoRedirect()).open
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=10)
@@ -125,7 +133,7 @@ class AnalysisClient:
     def analyze(self, context, now=None):
         fixed_clock = now is not None
         now = time.time() if now is None else now
-        validate_context(context, now)
+        validate_context(context, now, allow_missing_news=self.allow_missing_news)
         data = json.dumps(context, allow_nan=False)
         if len(data.encode()) > 30000:
             raise AnalysisError('Analysis input exceeds size cap')
@@ -133,7 +141,7 @@ class AnalysisClient:
         self.db.execute('BEGIN IMMEDIATE')
         try:
             row = self.db.execute('SELECT used FROM ai_budget WHERE day=?', (day,)).fetchone()
-            if row and row[0] >= self.daily_calls:
+            if self.daily_calls is not None and row and row[0] >= self.daily_calls:
                 raise AnalysisError('Daily analysis call cap exhausted')
             self.db.execute('INSERT INTO ai_budget VALUES (?,1) ON CONFLICT(day) DO UPDATE SET used=used+1', (day,))
             self.db.commit()
@@ -177,4 +185,5 @@ class AnalysisClient:
             raise AnalysisError('Malformed analysis output') from None
         # A delayed response must not pass using the request's old timestamp.
         completed_at = now if fixed_clock else time.time()
-        return validate_recommendation(result, context, completed_at)
+        return validate_recommendation(result, context, completed_at,
+                                       allow_missing_news=self.allow_missing_news)
