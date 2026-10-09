@@ -384,7 +384,18 @@ class Worker:
             self.emit('entry_wait',epic=epic)
             return True
         if not context.get('execution_supported',True) or not articles or scoring['score']<=0:
-            self.emit('entry_blocked',epic=epic,reason='execution_news_or_technical_filter')
+            blocked_filters=[]
+            if not context.get('execution_supported',True):
+                blocked_filters.append('execution_unsupported')
+            if not articles:
+                blocked_filters.append('missing_news')
+            if scoring['score']<=0:
+                blocked_filters.append('technical_filter')
+            self.emit('entry_blocked',epic=epic,reason='execution_news_or_technical_filter',
+                      blocked_filters=blocked_filters,analysis_action=result['action'],
+                      execution_supported=context.get('execution_supported',True),
+                      news_articles=len(articles),technical_score=scoring['score'],
+                      technical_reason=scoring['reason'],candle=candle)
             return True
         broker,journal=self.resources()
         if self.config.risk_mode=='auto':
