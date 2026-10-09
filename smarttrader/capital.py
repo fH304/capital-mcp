@@ -1,6 +1,7 @@
 """Restricted Capital demo REST adapter. Source: https://open-api.capital.com/.
 
-USD CFD contracts with lot/scaling 1 only. The runner supplies persistent ownership and order reservations.
+USD CFD account, contracts with verified USD FX routes and lot/scaling 1 only.
+The runner supplies persistent ownership and order reservations.
 Daily risk is supplied by a persistent controller, not by the AI model.
 """
 import json
@@ -14,7 +15,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, build_opener
 
-from .coordinator import CoordinationError, fresh
+from .coordinator import CoordinationError, EntryPreflightBlocked, fresh
+from .fx import ROUTES, conversion
 from .news import NoRedirect
 
 BASE = 'https://demo-api-capital.backend-capital.com/api/v1'
@@ -60,8 +62,9 @@ class CapitalDemo:
         self.last_request = self.last_login = float('-inf')
         self.prepared, self.pending = None, {}
         self._close_path = None
+        self.fx_quotes = {}
 
-    def _request(self, method, path, payload=None):
+    def _request(self, method, path, payload=None, preflight=None):
         # Fixed host; DELETE is enabled only inside verified submit_close.
         allowed = (method == 'GET' and (path in {'/session', '/accounts', '/positions', '/workingorders'}
                     or re.fullmatch(r'/(markets|positions|confirms)/[A-Za-z0-9_.:%-]+', path)))
@@ -82,9 +85,13 @@ class CapitalDemo:
                 self.last_login = self.last_request
             if method == 'POST' and path == '/positions' and self.entry_guard:
                 self.entry_guard()  # before HTTP, after any local pacing delay
+            if preflight:
+                preflight()
             request = Request(BASE+path, method=method,
                               data=json.dumps(payload, allow_nan=False).encode() if payload is not None else None,
                               headers={'Content-Type':'application/json', 'X-CAP-API-KEY':self.key, **self.headers})
+            # The worker repeats this check after its shared request pacing.
+            request.capital_preflight = preflight
             try:
                 with self.opener(request, timeout=20) as response:
                     raw, headers = response.read(2000001), response.headers
@@ -103,6 +110,7 @@ class CapitalDemo:
     def login(self):
         with self.lock:
             self.headers, self.account_id, self.offset = {}, None, None
+            self.fx_quotes.clear()
             data, headers = self._request('POST', '/session',
                                          {'identifier':self.user, 'password':self.password, 'encryptedPassword':False})
             try:
@@ -146,9 +154,25 @@ class CapitalDemo:
     def _market_quote(self,epic,observation_only):
         self.verify_session()
         data=self.get('/markets/'+identifier(epic))
+        result=self._quote(data,epic)
+        currency=result['quote_currency']
+        supported=currency=='USD' or currency in ROUTES
+        if not observation_only and not supported:
+            raise CapitalError('Unsupported market currency')
+        if observation_only and supported:
+            try:
+                self._conversion(currency,seed=result,refresh=False)
+            except (CapitalError,CoordinationError):
+                supported=False
+        # Monitoring/closure needs only a fresh price for the owned contract;
+        # a failing FX feed must not prevent an otherwise valid protective exit.
+        return dict(result,execution_supported=supported)
+
+    def _quote(self,data,epic):
         try:
             ins,snap=data['instrument'],data['snapshot']
-            if (ins['epic']!=epic or ins['type'] not in TYPES or (not observation_only and ins['currency']!='USD')
+            if (ins['epic']!=epic or ins['type'] not in TYPES
+                    or not isinstance(ins['currency'],str) or not re.fullmatch('[A-Z]{3}',ins['currency'])
                     or number(ins['lotSize'])!=1 or number(snap['scalingFactor'])!=1):
                 raise CapitalError('Unsupported market data contract')
             if snap['marketStatus']!='TRADEABLE' or 'REGULAR' not in snap['marketModes'] or number(snap['delayTime'])!=0:
@@ -166,9 +190,42 @@ class CapitalDemo:
                 stamp=dt.replace(tzinfo=timezone.utc).timestamp()-self.offset*3600
             fresh(stamp,self.clock(),30,'market quote')
             return dict(epic=epic,bid=bid,ask=ask,quote_time=stamp,
-                        execution_supported=ins['currency']=='USD', quote_currency=ins['currency'])
+                        instrument_type=ins['type'],quote_currency=ins['currency'])
         except (KeyError,TypeError,ValueError,OverflowError):
             raise CapitalError('Invalid market quote response') from None
+
+    def _conversion(self,currency,seed=None,refresh=True):
+        if currency=='USD':
+            return conversion(currency,None,self.clock())
+        epic=ROUTES.get(currency)
+        if not epic:
+            raise CapitalError('Unsupported currency conversion')
+        quote=seed if seed and seed.get('epic')==epic else None
+        if quote is None and not refresh:
+            cached=self.fx_quotes.get(epic)
+            if cached:
+                try:
+                    conversion(currency,cached,self.clock())
+                    quote=cached
+                except ValueError:
+                    pass
+        if quote is None:
+            quote=self._quote(self.get('/markets/'+identifier(epic)),epic)
+        try:
+            result=conversion(currency,quote,self.clock())
+        except ValueError:
+            raise CapitalError('Unverified currency conversion') from None
+        self.fx_quotes[epic]=dict(quote)
+        return result
+
+    def _entry_fresh(self,data):
+        try:
+            for key in ('quote_time','account_time','positions_time','orders_time',
+                        'contract_time','conversion_time'):
+                fresh(data[key],self.clock(),30,key)
+        except CoordinationError:
+            # No HTTP was sent when this preflight rejects an expired snapshot.
+            raise EntryPreflightBlocked('stale_entry_or_fx_quote') from None
 
     def snapshot(self, epic):
         with self.lock:
@@ -193,7 +250,8 @@ class CapitalDemo:
                 market = self.get('/markets/'+identifier(epic))
                 contract_time = self.clock()
                 ins, snap, rules = market['instrument'], market['snapshot'], market['dealingRules']
-                if (ins['epic'] != epic or ins['type'] not in TYPES or ins['currency'] != 'USD'
+                if (ins['epic'] != epic or ins['type'] not in TYPES
+                        or ins['currency'] not in {'USD',*ROUTES}
                         or number(ins['lotSize']) != 1 or number(snap['scalingFactor']) != 1
                         or ins['marginFactorUnit'] != 'PERCENTAGE'):
                     raise CapitalError('Unsupported contract convention')
@@ -211,6 +269,8 @@ class CapitalDemo:
                         raise CapitalError('Unexpected local quote timestamp')
                     quote_time = dt.replace(tzinfo=timezone.utc).timestamp()-self.offset*3600
                 fresh(quote_time, self.clock(), 30, 'quote')
+                fx=self._conversion(ins['currency'],seed=dict(epic=epic,bid=bid,ask=ask,
+                                    quote_time=quote_time,quote_currency=ins['currency'],instrument_type=ins['type']))
                 margin = number(ins['marginFactor'], True)/100
                 if margin > 1:
                     raise CapitalError('Invalid margin factor')
@@ -231,9 +291,9 @@ class CapitalDemo:
                             quote_time=quote_time, daily_stopped=daily['stopped'], daily_remaining_risk=remaining,
                             tradeable=(daily.get('ready',True) is True and snap['marketStatus']=='TRADEABLE' and 'REGULAR' in snap['marketModes']
                                        and number(snap['delayTime'])==0),
-                            point_value=1, quote_to_account=1, margin_per_unit=ask*margin,
+                            point_value=1, margin_factor=margin, margin_per_unit=ask*margin*fx['fx_rate'],
                             min_size=size_rule('minDealSize'), size_step=size_rule('minSizeIncrement'),
-                            max_size=size_rule('maxDealSize'), open_risk=0)
+                            max_size=size_rule('maxDealSize'), open_risk=0, **fx)
             except (KeyError, TypeError, ValueError, OverflowError):
                 raise CapitalError('Incomplete or invalid broker snapshot') from None
             self.prepared = (data, rules)
@@ -245,9 +305,7 @@ class CapitalDemo:
                 raise CapitalError('Adapter is unarmed or order reconciliation required')
             self.verify_session()
             data, rules = self.prepared
-            now = self.clock()
-            for key in ('quote_time', 'account_time', 'positions_time', 'orders_time', 'contract_time'):
-                fresh(data[key], now, 30, key)
+            self._entry_fresh(data)
             if plan['account_id'] != self.expected_account or plan['epic'] != data['epic']:
                 raise CapitalError('Prepared account or market mismatch')
             if not data['tradeable'] or data['daily_stopped'] or data['positions'] or data['working_orders']:
@@ -274,15 +332,19 @@ class CapitalDemo:
             if not low <= loss <= high or not low <= reward <= high or reward < 2*loss:
                 raise CapitalError('Broker protection or reward/risk limits failed')
             budget = min(data['equity']*.00125, data['daily_remaining_risk'])
-            if size*loss > budget+1e-9 or size*data['margin_per_unit'] > data['free_margin']*.1+1e-9:
+            if (size*loss*data['quote_to_account'] > budget+1e-9
+                    or size*data['margin_per_unit'] > data['free_margin']*.1+1e-9):
                 raise CapitalError('Risk or margin budget exceeded')
             payload = dict(epic=plan['epic'], direction=direction, size=size,
                            stopLevel=stop, profitLevel=target, guaranteedStop=False)
             self.prepared = None  # consume even when the transport fails
-            result = self._request('POST', '/positions', payload)[0]
+            result = self._request('POST', '/positions', payload,preflight=lambda:self._entry_fresh(data))[0]
             reference = result.get('dealReference')
             identifier(reference)
-            self.pending[reference] = dict(plan, _risk_cap=budget)
+            self.pending[reference] = dict(plan, _risk_cap=budget,
+                                          _quote_currency=data['quote_currency'],
+                                          _conversion=data['quote_to_account'],_fx_rate=data['fx_rate'],
+                                          _margin_cap=data['free_margin']*.1,_margin_factor=data['margin_factor'])
             return reference
 
     def confirm_entry(self, reference):
@@ -307,14 +369,18 @@ class CapitalDemo:
                               epic=market['epic'], direction=pos['direction'], size=number(pos['size'], True),
                               stop_level=number(pos['stopLevel'], True), target_level=number(pos['profitLevel'], True))
                 expected = self.pending[reference]
+                fx=self._conversion(expected['_quote_currency'])
                 fill = number(pos['level'], True)
                 fill_risk = fill-result['stop_level'] if result['direction']=='BUY' else result['stop_level']-fill
                 fill_reward = result['target_level']-fill if result['direction']=='BUY' else fill-result['target_level']
-                if (pos['dealId'] != deal or pos['currency']!='USD' or number(pos['contractSize'])!=1
+                risk=fill_risk*result['size']*max(fx['quote_to_account'],expected['_conversion'])
+                margin=fill*result['size']*expected['_margin_factor']*max(fx['fx_rate'],expected['_fx_rate'])
+                if (pos['dealId'] != deal or pos['currency']!=expected['_quote_currency'] or number(pos['contractSize'])!=1
                         or any(result[k] != expected[k] for k in ('account_id','epic','direction','size','stop_level','target_level'))
                         or fill_risk<=0 or fill_reward<2*fill_risk
-                        or fill_risk*result['size']>expected['_risk_cap']+1e-9):
+                        or risk>expected['_risk_cap']+1e-9 or margin>expected['_margin_cap']+1e-9):
                     raise CapitalError('Actual position differs from reserved order')
+                result.update(actual_risk=risk,actual_margin=margin,**fx)
             except (KeyError, TypeError):
                 raise CapitalError('Incomplete position confirmation') from None
             del self.pending[reference]
@@ -364,11 +430,13 @@ class CapitalDemo:
                 raise CapitalError('Expected position is not open')
             pos, market = matches[0]['position'], matches[0]['market']
             if (market['epic']!=expected['epic'] or pos['direction']!=expected['direction']
-                    or pos['size']!=expected['size'] or pos.get('currency')!='USD'
+                    or pos['size']!=expected['size'] or pos.get('currency')!=expected.get('quote_currency','USD')
                     or number(pos.get('contractSize'))!=1):
                 raise CapitalError('Close ownership mismatch')
             # A protective stop can have been removed: closure remains allowed.
-            self.market_quote(expected['epic'])
+            quote=self.market_quote(expected['epic'])
+            if quote['quote_currency']!=expected.get('quote_currency','USD'):
+                raise CapitalError('Close contract currency mismatch')
             self._close_path = '/positions/'+identifier(deal_id)
             try:
                 reference = self._request('DELETE',self._close_path)[0].get('dealReference')

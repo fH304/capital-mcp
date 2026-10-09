@@ -19,6 +19,10 @@ class CoordinationError(RuntimeError):
     pass
 
 
+class EntryPreflightBlocked(RuntimeError):
+    """Adapter proof that a pre-HTTP input check prevented submission."""
+
+
 def fresh(value, now, age, label):
     if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= now-value <= age:
         raise CoordinationError('Stale or invalid '+label)
@@ -37,6 +41,8 @@ def plan_entry(recommendation, context, snapshot, now):
         raise CoordinationError('Market mismatch')
     for key in ('account_time', 'positions_time', 'orders_time', 'contract_time'):
         fresh(snapshot.get(key), now, 30, key)
+    if 'conversion_time' in snapshot or snapshot.get('quote_currency','USD')!='USD':
+        fresh(snapshot.get('conversion_time'),now,30,'currency conversion')
     if snapshot.get('tradeable') is not True or snapshot.get('daily_stopped') is not False:
         raise CoordinationError('Market or daily entry gate is closed')
     if snapshot.get('positions') != [] or snapshot.get('working_orders') != []:
@@ -63,11 +69,16 @@ def plan_entry(recommendation, context, snapshot, now):
         raise CoordinationError('Empty account has inconsistent open risk')
     sizing = assessed_size(assessment=result['assessment'], validation_passed=False,
                            stop_distance=distance, spread=ask-bid, **inputs)
-    return {'account_id': str(snapshot['account_id']), 'epic': current['epic'],
+    plan = {'account_id': str(snapshot['account_id']), 'epic': current['epic'],
             'direction': result['action'], 'size': sizing['size'],
             'stop_level': result['stop_level'], 'target_level': result['target_level'],
             'planned_risk': sizing['planned_risk'], 'required_margin': sizing['required_margin'],
             'reason': result['reason'], 'article_ids': list(result['article_ids'])}
+    for key in ('account_currency','quote_currency','fx_epic','fx_rate','quote_to_account',
+                'conversion_time','conversion_fee_buffer'):
+        if key in snapshot:
+            plan[key]=snapshot[key]
+    return plan
 
 
 class DemoCoordinator:
@@ -141,12 +152,19 @@ class DemoCoordinator:
                     or not confirmation.get('deal_id')
                     or any(confirmation.get(k) != plan[k] for k in keys)):
                 raise CoordinationError('Position confirmation mismatch')
-            self.db.execute('UPDATE smart_entries SET status=?, deal=? WHERE signal=?',
-                            ('confirmed', str(confirmation['deal_id']), signal))
+            # Persist the independently verified fill-cost estimates for review.
+            for key in ('actual_risk','actual_margin'):
+                if key in confirmation:
+                    plan[key]=confirmation[key]
+            if 'conversion_time' in confirmation:
+                plan['confirmed_conversion_time']=confirmation['conversion_time']
+                plan['confirmed_fx_rate']=confirmation['fx_rate']
+            self.db.execute('UPDATE smart_entries SET status=?, deal=?, plan=? WHERE signal=?',
+                            ('confirmed', str(confirmation['deal_id']),json.dumps(plan,allow_nan=False),signal))
             self.db.commit()
             return {'status': 'confirmed', 'deal_id': str(confirmation['deal_id']), 'plan': plan}
-        except TrialEntryBlocked as error:
-            # This exception is raised only by the pre-HTTP entry guard.
+        except (TrialEntryBlocked,EntryPreflightBlocked) as error:
+            # These exceptions are raised only by pre-HTTP entry checks.
             # It proves no POST was sent; it is not a broker rejection.
             self.db.execute('UPDATE smart_entries SET status=? WHERE signal=?', ('blocked',signal))
             self.db.commit()
@@ -181,7 +199,8 @@ class DemoCoordinator:
         for deal in owned.keys() & actual.keys():
             pos, market = actual[deal]['position'],actual[deal]['market']
             plan=owned[deal]
-            if pos['size']!=plan['size'] or pos['direction']!=plan['direction'] or market['epic']!=plan['epic']:
+            if (pos['size']!=plan['size'] or pos['direction']!=plan['direction'] or market['epic']!=plan['epic']
+                    or ('quote_currency' in plan and pos.get('currency')!=plan['quote_currency'])):
                 changed.append(deal)
         return dict(owned={k:v for k,v in owned.items() if k in actual and k not in changed},
                     unknown=sorted(actual.keys()-owned.keys()),changed=changed,

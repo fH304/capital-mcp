@@ -15,6 +15,7 @@ from .analysis import AnalysisClient, AnalysisError, validate_context, validate_
 from .capital import CapitalDemo, CapitalError, identifier
 from .coordinator import DemoCoordinator
 from .daily import DailyRisk, AdaptiveDailyRisk
+from .fx import ROUTES
 from .marketdata import MarketCollector
 from .monitor import EntryGate, Monitor, PositionView, exit_decision
 from .news import NewsClient, timestamp
@@ -160,6 +161,9 @@ class Worker:
                 self.next_login=scheduled+1.1
             self.next_request=scheduled+.15
         time.sleep(max(0,scheduled-time.monotonic()))
+        preflight=getattr(request,'capital_preflight',None)
+        if preflight:
+            preflight()
         if (self.config.trial and request.get_method()=='POST'
                 and request.full_url.endswith('/positions')):
             self.trial_budget().require_entry(self.clock())
@@ -476,7 +480,8 @@ def main():
         log('smart_worker_started',mode=config.mode,account_id=config.account,
             market_mode='broad' if config.broad else 'single',markets=len(config.symbols),
             analysis_mode=config.analysis_mode,daily_analysis_cap=config.calls,
-            analysis_interval_seconds=config.analysis_interval)
+            analysis_interval_seconds=config.analysis_interval,
+            currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES))
         if args.once:
             for name in ('positions','news','opportunities'):
                 repeats=len(config.symbols) if config.broad and name=='opportunities' else 1

@@ -72,7 +72,7 @@ class UniverseTests(unittest.TestCase):
                 self.assertEqual(client.db.execute('SELECT used FROM budget').fetchone()[0],5)
             finally:
                 client.db.close()
-    def test_non_usd_is_observable_but_execution_is_refused(self):
+    def test_non_usd_without_verified_fx_is_observable_but_execution_is_refused(self):
         transport=LiveStateTransport()
         transport.market['instrument']['currency']='JPY'
         broker=CapitalDemo(key='private',user='private',password='private',account_id='demo-1',

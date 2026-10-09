@@ -336,7 +336,7 @@ class TrialWorkerTests(unittest.TestCase):
         self.now+=DURATION
         # Fresh quotes for the position watcher, independent of AI and news.
         self.transport.stop_missing=True
-        with patch.object(worker.local.broker,'market_quote',return_value=dict(bid=1.10,ask=1.1001,quote_time=self.now)):
+        with patch.object(worker.local.broker,'market_quote',return_value=dict(bid=1.10,ask=1.1001,quote_time=self.now,quote_currency='USD')):
             worker.positions()
         self.assertTrue(self.transport.closed)
         self.assertFalse(worker.local.journal.owned())

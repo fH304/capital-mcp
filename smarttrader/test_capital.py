@@ -138,8 +138,8 @@ class CapitalTests(unittest.TestCase):
                         self.assertEqual(c.db.execute('SELECT status FROM smart_entries').fetchone()[0],'uncertain')
                     finally:
                         c.close()
-    def test_non_usd_contract_and_nonunit_scaling_rejected(self):
-        for section,key,value in (('instrument','currency','JPY'),('instrument','lotSize',100),
+    def test_unknown_currency_and_nonunit_scaling_rejected(self):
+        for section,key,value in (('instrument','currency','XYZ'),('instrument','lotSize',100),
                                    ('snapshot','scalingFactor',100),('instrument','type','SHARES')):
             self.transport.market=market()
             self.transport.market[section][key]=value
