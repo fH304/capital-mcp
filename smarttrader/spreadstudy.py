@@ -12,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 from .candles import numeric, utc_stamp
-from .universe import MARKETS, SPREAD_ATR_LIMIT, spread_metrics
+from .universe import MARKETS, SPREAD_ATR_REFERENCE, SPREAD_POLICY, spread_metrics
 
 THRESHOLDS=(.1,.2,.3,.5)  # sensitivity comparisons only; never execution settings
 BAR_SECONDS=900
@@ -205,7 +205,8 @@ class SpreadStudy:
                     v['spread_gate_reason'] for v in values)),paper_candidates=len(plans),
                     paper_status_counts=dict(Counter(c['outcome']['status'] for c in plans)),
                     comparison=threshold_comparison(values,plans))
-            return dict(current_spread_atr_limit=SPREAD_ATR_LIMIT,threshold_changed=False,
+            return dict(current_spread_atr_limit=None,historical_spread_atr_reference=SPREAD_ATR_REFERENCE,
+                        spread_policy=SPREAD_POLICY,threshold_changed=True,
                         retention_days=7,markets=markets,
                         method='prospective_next_full_M15_open_exit_sides_16_bars',
                         limitations=['independent paper plans, not portfolio performance',
@@ -263,7 +264,9 @@ def historical_cost_study(markets,now):
             error=type(exc).__name__
         if error:
             result[epic]=dict(error_type=error,observations=0)
-    return dict(as_of=now,current_spread_atr_limit=SPREAD_ATR_LIMIT,threshold_changed=False,
+    return dict(as_of=now,current_spread_atr_limit=None,
+                historical_spread_atr_reference=SPREAD_ATR_REFERENCE,
+                spread_policy=SPREAD_POLICY,threshold_changed=True,
                 source='Capital historical M15 bid/ask close prices',markets=result,
                 limitations=['historical close spread is a proxy, not the rejected order quote',
                              'cost-screen pass rates do not establish profitable entry thresholds',

@@ -50,7 +50,9 @@ class UniverseTests(unittest.TestCase):
         self.assertGreater(rank(ctx)['score'],0)
         wide=copy.deepcopy(ctx)
         wide['ask']=wide['bid']+.02
-        self.assertEqual(rank(wide)['score'],0)
+        self.assertGreater(rank(wide)['score'],0)
+        self.assertLess(rank(wide)['score'],rank(ctx)['score'])
+        self.assertIsNone(rank(wide)['spread_atr_limit'])
         divergent=copy.deepcopy(ctx)
         divergent['timeframes']['HOUR']['candles'][-1]['c']=.9
         self.assertEqual(rank(divergent)['score'],0)

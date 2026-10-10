@@ -19,9 +19,10 @@ from .fx import ROUTES
 from .marketdata import MarketCollector
 from .monitor import EntryGate, Monitor, PositionView, exit_decision
 from .news import NewsClient, timestamp
-from .universe import MARKETS, relevant_articles, rank
+from .universe import MARKETS, SPREAD_POLICY, relevant_articles, rank
 from .schedule import MarketSchedule
 from .spreadstudy import SpreadStudy
+from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
 from .trial import is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
 
 
@@ -161,12 +162,27 @@ class Worker:
             self.local.spread_study=SpreadStudy(str(self.config.directory/'spread.sqlite'),self.config.account)
         return self.local.spread_study
 
+    def institutional_study(self):
+        if not hasattr(self.local,'institutional_study'):
+            self.local.institutional_study=InstitutionalStudy(
+                str(self.config.directory/'institutional.sqlite'),self.config.account)
+        return self.local.institutional_study
+
     @staticmethod
     def spread_fields(scoring):
         return {k:scoring[k] for k in ('spread','atr_15','spread_to_atr','spread_atr_limit',
-                                      'spread_gate_reason','timeframes_agree')}
+                                      'spread_gate_reason','timeframes_agree','spread_policy','spread_atr_reference')}
 
     def observe_spread(self,context,scoring,bars=()):
+        # New technical hypotheses are observational only. Their action is
+        # never passed to the AI, the coordinator, or the broker.
+        context['desk_brief']=market_brief(context,self.clock())
+        try:
+            observed=self.institutional_study().observe(context,self.clock(),bars)
+            if observed['recorded']:
+                self.emit('institutional_observation',epic=context['epic'],**observed)
+        except Exception as error:
+            self.emit('institutional_study_failed',epic=context['epic'],error_type=type(error).__name__)
         recorded=False
         try:
             self.spread_study().observe(context,scoring,self.clock(),bars)
@@ -492,6 +508,7 @@ class Worker:
             self.emit('entry_blocked',epic=epic,reason='feed_or_daily_gate')
             return True
         context['articles']=articles
+        context['desk_brief']=market_brief(context,self.clock())
         validate_context(context,self.clock())
         if recommendation is not None:
             if not self.trial_active():
@@ -566,11 +583,13 @@ def main():
             analysis_mode=config.analysis_mode,daily_analysis_cap=config.calls,
             analysis_interval_seconds=config.analysis_interval,
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
-            spread_study='observe_only_20pct_unchanged',
+            spread_study='observe_only_historical_threshold_comparison',spread_policy=SPREAD_POLICY,
             pair_entries=config.max_positions,
             pair_risk_fraction=.0025 if config.max_positions==2 else .00125,
             entry_policy='staged_owned_same_pair' if config.max_positions==2 else 'flat_only',
             leverage_policy='broker_current_no_probability_increase',
+            analysis_framework=FRAMEWORK,strategy_research=STRATEGY,
+            strategy_execution='existing_entry_gates_new_templates_shadow_only',
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):

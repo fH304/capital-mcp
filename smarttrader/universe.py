@@ -6,7 +6,8 @@ Every contract and executable quote is checked by Capital at runtime.
 import math
 import re
 
-SPREAD_ATR_LIMIT = .2
+SPREAD_ATR_REFERENCE = .2  # historical study reference, never an entry veto
+SPREAD_POLICY = 'executable_reward_risk_and_sizing'
 
 
 def spread_metrics(context):
@@ -19,10 +20,10 @@ def spread_metrics(context):
     if not all(math.isfinite(v) for v in (atr,spread)) or spread<0:
         raise ValueError('Invalid spread observations')
     ratio=spread/atr if atr>0 else None
-    reason=('zero_atr' if atr<=0 else
-            'spread_above_limit' if ratio>SPREAD_ATR_LIMIT else 'within_limit')
+    reason='zero_atr' if atr<=0 else 'cost_in_reward_risk_and_sizing'
     return dict(spread=spread,atr_15=atr,spread_to_atr=ratio,
-                spread_atr_limit=SPREAD_ATR_LIMIT,spread_gate_reason=reason)
+                spread_atr_limit=None,spread_gate_reason=reason,
+                spread_policy=SPREAD_POLICY,spread_atr_reference=SPREAD_ATR_REFERENCE)
 
 
 MARKETS = {
@@ -69,7 +70,11 @@ def relevant_articles(epic, articles, now):
 
 
 def rank(context):
-    """Heuristic trend agreement after spread, not a return/profit probability."""
+    """Cost-adjusted trend ranking, not a spread veto or win probability.
+
+    Actual entries still require 2:1 reward/risk at executable prices and
+    sizing that includes spread. Wide spreads lower rank, not eligibility.
+    """
     frames=context['timeframes']
     bars=frames['MINUTE_15']['candles']
     diagnostics=spread_metrics(context)
@@ -77,8 +82,8 @@ def rank(context):
     moves=[(v['candles'][-1]['c']-v['candles'][-6]['c'])/v['candles'][-6]['c']
            for v in frames.values()]
     diagnostics['timeframes_agree']=all(x>0 for x in moves) or all(x<0 for x in moves)
-    if diagnostics['spread_gate_reason']!='within_limit':
-        return dict(score=0.0,reason='spread_or_flat_market',**diagnostics)
+    if atr<=0:
+        return dict(score=0.0,reason='flat_market_zero_atr',**diagnostics)
     if not diagnostics['timeframes_agree']:
         return dict(score=0.0,reason='timeframes_disagree',**diagnostics)
     normalized=abs(moves[0])/(atr/bars[-1]['c'])
@@ -86,4 +91,4 @@ def rank(context):
     score=min(normalized, 5)/(1+spread/atr)
     if not math.isfinite(score):
         raise ValueError('Invalid candidate score')
-    return dict(score=score,reason='trend_agreement_after_spread',**diagnostics)
+    return dict(score=score,reason='trend_agreement_cost_adjusted',**diagnostics)

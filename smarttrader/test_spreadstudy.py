@@ -48,7 +48,7 @@ class CostTests(unittest.TestCase):
         self.assertIsNone(metrics['spread_to_atr'])
         json.dumps(metrics,allow_nan=False)
 
-    def test_existing_spread_boundary_and_trend_gate_remain(self):
+    def test_spread_is_a_cost_not_a_fixed_cutoff_and_trend_gate_remains(self):
         ctx=trending()
         for frame in ctx['timeframes'].values():
             for index,candle in enumerate(frame['candles']):
@@ -58,8 +58,9 @@ class CostTests(unittest.TestCase):
         self.assertEqual(rank(ctx)['spread_to_atr'],.2)
         self.assertGreater(rank(ctx)['score'],0)
         ctx['ask']=3.5001
-        self.assertEqual(rank(ctx)['score'],0)
-        self.assertEqual(rank(ctx)['spread_gate_reason'],'spread_above_limit')
+        self.assertGreater(rank(ctx)['score'],0)
+        self.assertIsNone(rank(ctx)['spread_atr_limit'])
+        self.assertEqual(rank(ctx)['spread_gate_reason'],'cost_in_reward_risk_and_sizing')
         ctx['ask']=3.5
         ctx['timeframes']['HOUR']['candles'][-1]['c']=1
         self.assertEqual(rank(ctx)['reason'],'timeframes_disagree')
@@ -131,7 +132,8 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(),before)
             self.assertEqual(report['markets']['EURUSD']['observations'],1)
             self.assertEqual(report['markets']['EURUSD']['paper_candidates'],1)
-            self.assertFalse(report['threshold_changed'])
+            self.assertTrue(report['threshold_changed'])
+            self.assertIsNone(report['current_spread_atr_limit'])
             self.assertEqual(len(report['markets']),21)
             with self.assertRaises(sqlite3.OperationalError):
                 SpreadStudy.report(Path(folder)/'absent.sqlite','demo-1',NOW)
@@ -162,7 +164,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(market['observations'],25)
         self.assertTrue(all(v['paper_completed']==0 and v['mean_price_R'] is None
                             for v in market['comparison']))
-        self.assertFalse(report['threshold_changed'])
+        self.assertTrue(report['threshold_changed'])
         duplicate=copy.deepcopy(feed)
         duplicate.append(duplicate[-2])
         result=historical_cost_study({'EURUSD':dict(prices=duplicate)},NOW)
@@ -182,7 +184,9 @@ class WorkerStudyTests(unittest.TestCase):
         worker=fixture.make()
         ctx=fixture.collect(None,'EURUSD')
         ctx['ask']=ctx['bid']+.001
-        # Still a valid recommendation, but current spread/ATR gate rejects it.
+        # A wide spread alone no longer vetoes the candidate. Another real
+        # technical disagreement still prevents an order and records costs.
+        ctx['timeframes']['HOUR']['candles'][-1].update(c=.9,l=.89)
         scoring=rank(ctx)
         self.assertEqual(scoring['score'],0)
         worker.monitor_market('EURUSD',ctx,scoring,[article('Euro',['EURUSD.FOREX'])])
@@ -190,7 +194,7 @@ class WorkerStudyTests(unittest.TestCase):
         self.assertEqual(len(costs),1)
         self.assertFalse(costs[0]['technical_passed'])
         block=[f for event,f in fixture.events if event=='entry_blocked'][0]
-        self.assertEqual(block['spread_gate_reason'],'spread_above_limit')
+        self.assertEqual(block['spread_gate_reason'],'cost_in_reward_risk_and_sizing')
         self.assertFalse(any(m=='POST' and u.endswith('/positions') for m,u,_ in fixture.transport.calls))
 
     def test_study_disk_failure_does_not_change_existing_entry_behavior(self):
