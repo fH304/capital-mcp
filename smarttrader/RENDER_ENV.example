@@ -12,7 +12,10 @@ SMART_DAILY_RISK_MODE=auto
 # Optional legacy fixed mode: SMART_DAILY_RISK_MODE=fixed, SMART_DAILY_LOSS_LIMIT=<USD>
 SMART_TRIAL_ENABLED=1
 # Authorized account above + broad: one persistent 72-hour/$20 OpenAI trial.
-# Starts on first worker launch; restart/redeploy never renews time or spend.
+# Original checkpoint: 2026-10-08 18:24:33.5271823 UTC, ends Oct 11 at that time.
+# Requires the complete original trial.sqlite on the same persistent disk.
+# Missing/replaced ledger blocks paid analysis and new entries; no fresh grant.
+# Do not delete state, copy only the start row, or disable the guard to resume.
 # Trial overrides legacy daily cap/spacing and pins gpt-4.1-mini-2025-04-14.
 # At expiry/exhaustion: no paid analysis/new entries; position protection stays on.
 # Set SMART_TRIAL_ENABLED=0 to opt out. Other accounts default to disabled.

@@ -537,7 +537,8 @@ def main():
             analysis_mode=config.analysis_mode,daily_analysis_cap=config.calls,
             analysis_interval_seconds=config.analysis_interval,
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
-            spread_study='observe_only_20pct_unchanged')
+            spread_study='observe_only_20pct_unchanged',
+            trial_ledger_guard='original_checkpoint_required',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):
                 repeats=len(config.symbols) if config.broad and name=='opportunities' else 1

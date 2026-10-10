@@ -3,8 +3,10 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 from urllib.error import HTTPError
+from pathlib import Path
 
 from .analysis import AnalysisClient, AnalysisError
 from .capital import CapitalDemo
@@ -14,7 +16,19 @@ from .test_analysis import NOW, context, recommendation
 from .test_runner import LiveStateTransport
 from .test_universe import MARKETS, article, trending
 from .trial import (APPROVED_ACCOUNT, DURATION, LIMIT_NANO, MAX_CHARGE,
-                    MODEL, TRIAL_ID, TrialBudget, TrialStopped)
+                    MODEL, TRIAL_ID, TrialBudget, TrialStopped, AUTHORIZED_STARTED_AT)
+
+
+def original_checkpoint(path,stamp=NOW):
+    """Tests start from an approved legacy ledger, not a new runtime grant."""
+    Path(path).parent.mkdir(parents=True,exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE IF NOT EXISTS trial_runs('
+                   'trial_id TEXT,account TEXT,started_at REAL NOT NULL,ends_at REAL NOT NULL,'
+                   'last_seen REAL NOT NULL,limit_nano INTEGER NOT NULL,stop_reason TEXT,'
+                   'PRIMARY KEY(trial_id,account))')
+        db.execute('INSERT INTO trial_runs VALUES(?,?,?,?,?,?,NULL)',
+                   (TRIAL_ID,APPROVED_ACCOUNT,stamp,stamp+DURATION,stamp,LIMIT_NANO))
 
 
 def response(action='WAIT', inp=6000, out=500, cached=0, status='completed'):
@@ -42,6 +56,10 @@ class TrialBudgetTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory()
         self.path=self.tmp.name+'/trial.sqlite'
         self.budgets=[]
+        authorization=patch('smarttrader.trial.AUTHORIZED_STARTED_AT',NOW)
+        authorization.start()
+        self.addCleanup(authorization.stop)
+        original_checkpoint(self.path)
     def tearDown(self):
         for budget in self.budgets:
             budget.close()
@@ -111,6 +129,7 @@ class TrialBudgetTests(unittest.TestCase):
         for update in ({'usage':None},{'usage':{'input_tokens':True,'output_tokens':1}},
                        {'model':'unpriced-model'},{'usage':{'input_tokens':1,'output_tokens':2001}}):
             with self.subTest(update=update), tempfile.TemporaryDirectory() as directory:
+                original_checkpoint(directory+'/trial.sqlite')
                 budget=TrialBudget(directory+'/trial.sqlite',APPROVED_ACCOUNT,NOW)
                 try:
                     charge=budget.reserve('US30',MODEL,NOW)
@@ -210,6 +229,128 @@ class TrialBudgetTests(unittest.TestCase):
             client.db.close()
 
 
+class TrialLedgerGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path=self.tmp.name+'/trial.sqlite'
+        self.now=AUTHORIZED_STARTED_AT+86400
+
+    def budget(self,path=None):
+        budget=TrialBudget(path or self.path,APPROVED_ACCOUNT,self.now)
+        self.addCleanup(budget.close)
+        return budget
+
+    def test_missing_file_cannot_grant_a_new_trial_or_paid_request(self):
+        budget=self.budget()
+        status=budget.status(self.now)
+        self.assertFalse(status['trial_active'])
+        self.assertFalse(status['ledger_verified'])
+        self.assertEqual(status['stop_reason'],'trial_state_missing')
+        self.assertEqual(status['started_at'],AUTHORIZED_STARTED_AT)
+        self.assertEqual(status['ends_at'],AUTHORIZED_STARTED_AT+DURATION)
+        self.assertIsNone(status['remaining_usd'])
+        self.assertEqual(status['requests'],0)
+        fresh=context()
+        fresh['quote_time']=self.now
+        fresh['articles'][0]['published_utc']=datetime.fromtimestamp(self.now-60,timezone.utc).isoformat()
+        client=AnalysisClient('private',MODEL,self.tmp.name+'/ai.sqlite',daily_calls=None,
+                              opener=lambda *a,**kw:self.fail('Unexpected paid HTTP'),trial=budget)
+        self.addCleanup(client.db.close)
+        with self.assertRaisesRegex(TrialStopped,'trial_state_missing'):
+            client.analyze(fresh,self.now)
+        with self.assertRaisesRegex(TrialStopped,'trial_state_missing'):
+            budget.require_entry(self.now)
+        restarted=self.budget()
+        self.assertEqual(restarted.status(self.now+3600)['ends_at'],status['ends_at'])
+        self.assertFalse(restarted.status(self.now+3600)['trial_active'])
+
+    def test_original_checkpoint_keeps_settled_and_pending_spend_after_redeploy(self):
+        original_checkpoint(self.path,AUTHORIZED_STARTED_AT)
+        budget=self.budget()
+        settled=budget.reserve('GOLD',MODEL,self.now)
+        budget.settle(settled,response())
+        budget.reserve('US100',MODEL,self.now)
+        restarted=self.budget()
+        status=restarted.status(self.now)
+        self.assertTrue(status['trial_active'])
+        self.assertTrue(status['ledger_verified'])
+        self.assertEqual(status['accounted_usd_scope'],'original_trial')
+        self.assertEqual(status['requests'],2)
+        self.assertAlmostEqual(status['accounted_usd'],.0032+MAX_CHARGE/1e9)
+        self.assertEqual(status['unreconciled_usd'],MAX_CHARGE/1e9)
+        self.assertEqual(status['ends_at'],AUTHORIZED_STARTED_AT+DURATION)
+        self.assertEqual(restarted.status(AUTHORIZED_STARTED_AT+DURATION)['stop_reason'],
+                         'duration_elapsed')
+
+    def test_later_self_consistent_checkpoint_is_blocked_without_destroying_local_charges(self):
+        replacement_start=1791603146.2206626
+        original_checkpoint(self.path,replacement_start)
+        self.now=replacement_start+3600
+        budget=self.budget()
+        budget.db.execute('INSERT INTO trial_calls VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL)',
+                          ('fragment',TRIAL_ID,APPROVED_ACCOUNT,'GOLD',self.now,
+                           64_860_400,64_860_400))
+        budget.db.commit()
+        status=budget.status(self.now)
+        self.assertEqual(status['stop_reason'],'trial_ledger_replaced')
+        self.assertFalse(status['trial_active'])
+        self.assertFalse(status['ledger_verified'])
+        self.assertIsNone(status['remaining_usd'])
+        self.assertEqual(status['accounted_usd_scope'],'available_local_fragment')
+        self.assertEqual(status['accounted_usd'],.0648604)
+        self.assertEqual(status['authorized_ends_at'],AUTHORIZED_STARTED_AT+DURATION)
+        self.assertEqual(status['started_at'],replacement_start)
+        self.assertEqual(budget.db.execute('SELECT COUNT(*) FROM trial_calls').fetchone()[0],1)
+        with self.assertRaisesRegex(TrialStopped,'trial_ledger_replaced'):
+            budget.reserve('GOLD',MODEL,self.now)
+        with self.assertRaisesRegex(TrialStopped,'trial_ledger_replaced'):
+            budget.require_entry(self.now)
+
+    def test_changed_state_path_and_deleted_database_do_not_refund_or_regrant(self):
+        original_checkpoint(self.path,AUTHORIZED_STARTED_AT)
+        original=self.budget()
+        original.reserve('GOLD',MODEL,self.now)
+        moved=self.budget(self.tmp.name+'/other/trial.sqlite')
+        self.assertEqual(moved.status(self.now)['stop_reason'],'trial_state_missing')
+        self.assertEqual(original.status(self.now)['unreconciled_usd'],MAX_CHARGE/1e9)
+        original.close()
+        # close() is idempotent, so the cleanup remains safe.
+        Path(self.path).unlink()
+        replaced=self.budget()
+        self.assertFalse(replaced.status(self.now)['trial_active'])
+        self.assertIsNone(replaced.status(self.now)['remaining_usd'])
+
+    def test_read_only_report_identifies_replacement_without_mutating_or_creating_state(self):
+        original_checkpoint(self.path,self.now)
+        budget=self.budget()
+        before=budget.db.execute('SELECT * FROM trial_runs').fetchall()
+        report=TrialBudget.report(self.path,APPROVED_ACCOUNT,self.now+10)
+        self.assertEqual(report['stop_reason'],'trial_ledger_replaced')
+        self.assertFalse(report['ledger_verified'])
+        self.assertIsNone(report['remaining_usd'])
+        self.assertEqual(budget.db.execute('SELECT * FROM trial_runs').fetchall(),before)
+        missing=self.tmp.name+'/missing.sqlite'
+        with self.assertRaises(sqlite3.OperationalError):
+            TrialBudget.report(missing,APPROVED_ACCOUNT,self.now)
+        self.assertFalse(Path(missing).exists())
+
+    def test_modified_deadline_or_limit_cannot_expand_original_authorization(self):
+        for column,value in [('ends_at',AUTHORIZED_STARTED_AT+DURATION+1),
+                             ('limit_nano',LIMIT_NANO+1)]:
+            with self.subTest(column=column),tempfile.TemporaryDirectory() as directory:
+                path=directory+'/trial.sqlite'
+                original_checkpoint(path,AUTHORIZED_STARTED_AT)
+                budget=TrialBudget(path,APPROVED_ACCOUNT,self.now)
+                try:
+                    budget.db.execute(f'UPDATE trial_runs SET {column}=?',(value,))
+                    budget.db.commit()
+                    self.assertEqual(budget.status(self.now)['stop_reason'],'trial_ledger_replaced')
+                    self.assertIsNone(budget.status(self.now)['remaining_usd'])
+                finally:
+                    budget.close()
+
+
 class TrialWorkerTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
@@ -217,6 +358,10 @@ class TrialWorkerTests(unittest.TestCase):
         self.events=[]
         self.ai_calls=[]
         self.workers=[]
+        authorization=patch('smarttrader.trial.AUTHORIZED_STARTED_AT',NOW)
+        authorization.start()
+        self.addCleanup(authorization.stop)
+        original_checkpoint(self.tmp.name+'/state/trial.sqlite')
         self.transport=LiveStateTransport()
         self.transport.account=APPROVED_ACCOUNT
         self.env=dict(BOT_ACCOUNT_ID=APPROVED_ACCOUNT,CAP_API_KEY='private',CAP_IDENTIFIER='private',
@@ -231,7 +376,7 @@ class TrialWorkerTests(unittest.TestCase):
         self.expire_during_http=False
     def tearDown(self):
         for worker in self.workers:
-            for name in ('journal','daily','ai','schedule','trial'):
+            for name in ('journal','daily','ai','schedule','trial','spread_study'):
                 value=getattr(worker.local,name,None)
                 if value and hasattr(value,'db'):
                     value.db.close()
@@ -342,6 +487,40 @@ class TrialWorkerTests(unittest.TestCase):
         self.assertFalse(worker.local.journal.owned())
         self.sweep(worker)
         self.assertEqual(len(self.ai_calls),1)
+    def test_lost_trial_file_blocks_ai_and_entries_but_preserves_owned_position_protection(self):
+        worker=self.make()
+        self.prime(worker)
+        self.ai_action='BUY'
+        with patch.object(MarketCollector,'collect_market',lambda collector,epic:self.collect(collector,epic)):
+            worker.opportunities()
+        self.assertEqual(len(worker.local.journal.owned()),1)
+        old=worker.local.trial
+        old.close()
+        del worker.local.trial
+        # Analysis also holds the old trial connection; a redeployed worker
+        # constructs both clients again against the surviving journal.
+        worker.local.ai.db.close()
+        del worker.local.ai
+        (worker.config.directory/'trial.sqlite').unlink()
+        self.transport.stop_missing=True
+        with patch.object(worker.local.broker,'market_quote',return_value=dict(bid=1.10,ask=1.1001,quote_time=self.now,quote_currency='USD')):
+            worker.positions()
+        self.assertTrue(self.transport.closed)
+        self.assertFalse(worker.local.journal.owned())
+        before=sum(m=='POST' and u.endswith('/positions') for m,u,_ in self.transport.calls)
+        self.sweep(worker)
+        self.assertEqual(len(self.ai_calls),1)
+        self.assertEqual(sum(m=='POST' and u.endswith('/positions') for m,u,_ in self.transport.calls),before)
+        self.assertEqual(worker.trial_budget().status(self.now)['stop_reason'],'trial_state_missing')
+    def test_fresh_worker_without_trial_ledger_never_sends_paid_analysis_or_order(self):
+        (Path(self.tmp.name)/'state/trial.sqlite').unlink()
+        worker=self.make()
+        self.prime(worker)
+        self.sweep(worker)
+        self.assertEqual(self.ai_calls,[])
+        self.assertFalse(any(m=='POST' and u.endswith('/positions') for m,u,_ in self.transport.calls))
+        self.assertIn('trial_stopped',[e for e,_ in self.events])
+        self.assertIn('smart_heartbeat',[e for e,_ in self.events])
     def test_final_pre_http_entry_guard_veto_is_known_unsent_and_not_uncertain(self):
         worker=self.make()
         self.prime(worker)

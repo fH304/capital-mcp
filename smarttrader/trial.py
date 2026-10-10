@@ -17,6 +17,9 @@ APPROVED_ACCOUNT = '330438437114294558'
 TRIAL_ID = '2026-10-08-all21-72h-20usd'
 MODEL = 'gpt-4.1-mini-2025-04-14'
 DURATION = 72 * 3600
+# Original deployed checkpoint, verified in the user's 2026-10-08 Render log.
+# A later deployment is not authorization for another 72 hours or another $20.
+AUTHORIZED_STARTED_AT = 1791483873.5271823
 LIMIT_NANO = 20 * 1_000_000_000
 MAX_INPUT = 1_047_576
 MAX_OUTPUT = 2000
@@ -58,8 +61,11 @@ class TrialBudget:
                 latest_equity REAL NOT NULL, observed_at REAL NOT NULL,
                 open_positions INTEGER NOT NULL, PRIMARY KEY(trial_id,account));
         ''')
-        self.db.execute('INSERT OR IGNORE INTO trial_runs VALUES(?,?,?,?,?,?,NULL)',
-                        (TRIAL_ID,account,now,now+DURATION,now,LIMIT_NANO))
+        # Missing state is a blocked placeholder, never a fresh funded run.
+        # Preserve any surviving calls and original/replaced row for review.
+        self.db.execute('INSERT OR IGNORE INTO trial_runs VALUES(?,?,?,?,?,?,?)',
+                        (TRIAL_ID,account,AUTHORIZED_STARTED_AT,
+                         AUTHORIZED_STARTED_AT+DURATION,now,LIMIT_NANO,'trial_state_missing'))
         self.db.commit()
 
     @staticmethod
@@ -74,13 +80,19 @@ class TrialBudget:
         if row is None:
             raise TrialStopped('trial_state_missing')
         start,end,last,limit,reason = row
+        identity_ok = (self.account == APPROVED_ACCOUNT and start == AUTHORIZED_STARTED_AT
+                       and end == AUTHORIZED_STARTED_AT+DURATION and limit == LIMIT_NANO)
+        ledger_verified = identity_ok and reason not in {
+            'trial_state_missing','trial_ledger_replaced','unauthorized_trial_account'}
         used,pending,requests = self.db.execute(
             'SELECT COALESCE(SUM(COALESCE(charged_nano,reserved_nano)),0),'
             'COALESCE(SUM(CASE WHEN charged_nano IS NULL THEN reserved_nano ELSE 0 END),0),COUNT(*) '
             'FROM trial_calls WHERE trial_id=? AND account=?', (TRIAL_ID,self.account)).fetchone()
         if not reason:
-            if limit != LIMIT_NANO or end != start+DURATION:
-                reason = 'trial_policy_changed'
+            if self.account != APPROVED_ACCOUNT:
+                reason = 'unauthorized_trial_account'
+            elif not identity_ok:
+                reason = 'trial_ledger_replaced'
             elif now+1 < last or now < start:
                 reason = 'clock_moved_backwards'
             elif now >= end:
@@ -92,8 +104,12 @@ class TrialBudget:
                             'WHERE trial_id=? AND account=?', (max(last,now),reason,TRIAL_ID,self.account))
         return dict(trial_id=TRIAL_ID,trial_active=not bool(reason),stop_reason=reason,
                     started_at=start,ends_at=end,budget_usd=limit/1e9,
+                    authorized_started_at=AUTHORIZED_STARTED_AT,
+                    authorized_ends_at=AUTHORIZED_STARTED_AT+DURATION,
+                    authorized_budget_usd=LIMIT_NANO/1e9,ledger_verified=ledger_verified,
+                    accounted_usd_scope='original_trial' if ledger_verified else 'available_local_fragment',
                     accounted_usd=used/1e9,unreconciled_usd=pending/1e9,
-                    remaining_usd=max(0,limit-used)/1e9,requests=requests)
+                    remaining_usd=max(0,limit-used)/1e9 if ledger_verified else None,requests=requests)
 
     def status(self, now):
         self._time(now)
