@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .analysis import validate_recommendation
 from .policy import assessed_size
+from .exposure import entry_limits, ExposureError
 from .trial import TrialEntryBlocked
 
 
@@ -23,17 +24,21 @@ class EntryPreflightBlocked(RuntimeError):
     """Adapter proof that a pre-HTTP input check prevented submission."""
 
 
+class PairEntryBlocked(CoordinationError):
+    """A known exposure veto before any broker order is submitted."""
+
+
 def fresh(value, now, age, label):
     if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= now-value <= age:
         raise CoordinationError('Stale or invalid '+label)
 
 
-def plan_entry(recommendation, context, snapshot, now):
+def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positions=1):
     """Revalidate analysis with current executable quotes and broker metadata.
 
     snapshot is trusted adapter data, never part of the model recommendation.
-    This initial integration refuses occupied accounts until ownership and exit
-    reconciliation are connected. It never proposes changing leverage.
+    Two-entry mode accepts only independently verified journal-owned legs.
+    It never treats the analysis assessment as a calibrated probability.
     """
     if snapshot.get('environment') != 'demo' or not snapshot.get('account_id'):
         raise CoordinationError('Only an identified demo account is supported')
@@ -45,7 +50,9 @@ def plan_entry(recommendation, context, snapshot, now):
         fresh(snapshot.get('conversion_time'),now,30,'currency conversion')
     if snapshot.get('tradeable') is not True or snapshot.get('daily_stopped') is not False:
         raise CoordinationError('Market or daily entry gate is closed')
-    if snapshot.get('positions') != [] or snapshot.get('working_orders') != []:
+    if max_positions not in (1, 2):
+        raise CoordinationError('Invalid position policy')
+    if max_positions == 1 and (snapshot.get('positions') != [] or snapshot.get('working_orders') != []):
         raise CoordinationError('Account must be reconciled and empty before entry')
     # Replace old analysis prices after the model call; recheck reward/risk.
     current = dict(context, bid=snapshot.get('bid'), ask=snapshot.get('ask'),
@@ -67,6 +74,18 @@ def plan_entry(recommendation, context, snapshot, now):
         raise CoordinationError('Incomplete broker risk metadata') from None
     if inputs['open_risk'] != 0:
         raise CoordinationError('Empty account has inconsistent open risk')
+    limits = None
+    if max_positions == 2:
+        try:
+            candle = context['timeframes']['MINUTE_15']['candles'][-1]['t']
+            fresh(candle+900, now, 900, 'closed entry candle')
+            limits = entry_limits(snapshot, owned, direction=result['action'],
+                                  assessment=result['assessment'], candle=candle)
+        except (KeyError, IndexError, TypeError, ExposureError, ValueError) as error:
+            raise PairEntryBlocked(str(error)) from None
+        inputs.update(open_risk=limits['existing_risk'],
+                      daily_remaining_risk=limits['daily_remaining_risk'],
+                      portfolio_fraction='0.0025', margin_fraction=limits['margin_fraction'])
     sizing = assessed_size(assessment=result['assessment'], validation_passed=False,
                            stop_distance=distance, spread=ask-bid, **inputs)
     plan = {'account_id': str(snapshot['account_id']), 'epic': current['epic'],
@@ -78,6 +97,13 @@ def plan_entry(recommendation, context, snapshot, now):
                 'conversion_time','conversion_fee_buffer'):
         if key in snapshot:
             plan[key]=snapshot[key]
+    if limits is not None:
+        plan.update(group_equity=limits['group_equity'], pair_risk_limit=limits['pair_risk_limit'],
+                    existing_risk=limits['existing_risk'], existing_margin=limits['existing_margin'],
+                    combined_planned_risk=limits['existing_risk']+plan['planned_risk'],
+                    combined_required_margin=limits['existing_margin']+plan['required_margin'],
+                    pair_position_limit=2, signal_candle=candle, assessment=result['assessment'],
+                    leverage=snapshot['leverage'], confidence_basis='assessment_not_probability')
     return plan
 
 
@@ -89,7 +115,10 @@ class DemoCoordinator:
     the actual position and return its account, epic, direction, size, stop and
     target in addition to deal_id and status='confirmed'. No automatic retry.
     """
-    def __init__(self, path, account_id):
+    def __init__(self, path, account_id, max_positions=1):
+        if type(max_positions) is not int or max_positions not in (1, 2):
+            raise CoordinationError('Invalid position policy')
+        self.max_positions = max_positions
         self.account_id = str(account_id)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=10)
@@ -117,7 +146,16 @@ class DemoCoordinator:
         now = time.time() if now is None else now
         if str(snapshot.get('account_id')) != self.account_id:
             raise CoordinationError('Snapshot account mismatch')
-        plan = plan_entry(recommendation, context, snapshot, now)
+        if self.max_positions == 2:
+            if self.unresolved():
+                raise CoordinationError('Account ownership or order review required')
+            # Monitoring reconciles closures separately. Do not mark a newly
+            # confirmed leg closed using an older in-flight entry snapshot.
+        try:
+            plan = plan_entry(recommendation, context, snapshot, now,
+                              owned=self.owned(), max_positions=self.max_positions)
+        except PairEntryBlocked as error:
+            return dict(status='blocked',reason=str(error))
         if plan is None:
             return {'status': 'wait'}
         if self.unresolved():
@@ -133,9 +171,17 @@ class DemoCoordinator:
             if self.db.execute("SELECT 1 FROM smart_entries WHERE account=? AND status IN ('pending','uncertain')",
                                (self.account_id,)).fetchone():
                 raise CoordinationError('Unresolved order; broker reconciliation required')
+            if self.max_positions == 2:
+                # Another client must not use a pre-reservation snapshot after
+                # an order has been confirmed on the shared journal.
+                plan = plan_entry(recommendation, context, snapshot, now,
+                                  owned=self.owned(), max_positions=2)
             self.db.execute('INSERT INTO smart_entries (signal,account,status,plan) VALUES (?,?,?,?)',
                             (signal, self.account_id, 'pending', json.dumps(plan, allow_nan=False)))
             self.db.commit()
+        except PairEntryBlocked as error:
+            self.db.rollback()
+            return dict(status='blocked',reason=str(error))
         except Exception:
             self.db.rollback()
             raise
@@ -156,6 +202,13 @@ class DemoCoordinator:
             for key in ('actual_risk','actual_margin'):
                 if key in confirmation:
                     plan[key]=confirmation[key]
+            if self.max_positions == 2:
+                if confirmation.get('leverage') != plan['leverage']:
+                    raise CoordinationError('Confirmed leverage differs from reserved entry')
+                for key in ('existing_risk','existing_margin'):
+                    plan[key]=confirmation[key]
+                plan['combined_actual_risk']=plan['existing_risk']+plan['actual_risk']
+                plan['combined_actual_margin']=plan['existing_margin']+plan['actual_margin']
             if 'conversion_time' in confirmation:
                 plan['confirmed_conversion_time']=confirmation['conversion_time']
                 plan['confirmed_fx_rate']=confirmation['fx_rate']

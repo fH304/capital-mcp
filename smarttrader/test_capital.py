@@ -51,6 +51,8 @@ class Transport:
                                        balance=dict(balance=1000,available=1000,profitLoss=10))])
         elif path=='/workingorders':
             data = {'workingOrders':[]}
+        elif path=='/accounts/preferences':
+            data = dict(hedgingMode=True,leverages={'CURRENCIES':dict(current=200,available=[1,10,20,200])})
         elif path=='/positions' and method=='GET':
             data = {'positions':[]}
         elif path.startswith('/markets/'):
@@ -66,7 +68,7 @@ class Transport:
         elif path=='/positions/deal-1':
             p = self.position
             data = dict(position=dict(dealId='deal-1',currency='USD',contractSize=1,
-                                      direction=p['direction'],size=p['size'],level=self.fill,
+                                      direction=p['direction'],size=p['size'],level=self.fill,leverage=200,
                                       stopLevel=None if self.stop_missing else p['stopLevel'],profitLevel=p['profitLevel']),
                         market=dict(epic=p['epic']))
         else:

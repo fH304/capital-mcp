@@ -22,7 +22,7 @@ class LiveStateTransport(PriceTransport):
     def actual(self):
         p=self.position
         return dict(position=dict(dealId='deal-1',currency='USD',contractSize=1,
-                    direction=p['direction'],size=p['size'],level=self.fill,
+                    direction=p['direction'],size=p['size'],level=self.fill,leverage=200,
                     stopLevel=None if self.stop_missing else p['stopLevel'],profitLevel=p['profitLevel']),
                     market=dict(epic=p['epic']))
     def __call__(self,request,timeout):

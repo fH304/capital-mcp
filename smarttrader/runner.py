@@ -69,6 +69,11 @@ class Config:
         self.trial=trial_flag=='1'
         if self.trial and (not is_approved_account(self.account) or not self.broad):
             raise ValueError('Trial is authorized for the approved broad demo account only')
+        # Two staged legs were explicitly authorized for this demo account.
+        self.max_positions=int(env.get('SMART_PAIR_ENTRIES',
+                                       '2' if self.trial and is_approved_account(self.account) else '1'))
+        if self.max_positions not in (1,2):
+            raise ValueError('SMART_PAIR_ENTRIES must be 1 or 2')
         self.analysis_mode=env.get('SMART_ANALYSIS_MODE','budgeted')
         if self.analysis_mode not in {'continuous','budgeted'}:
             raise ValueError('Invalid analysis mode')
@@ -116,6 +121,7 @@ class Worker:
         self.local=threading.local()
         self.gate=EntryGate()
         self.feed_lock=threading.Lock()
+        self.order_lock=threading.RLock()
         self.articles={}
         # Scheduling is shared across clients but slow I/O does not hold the lock.
         self.rate_lock=threading.Lock()
@@ -209,18 +215,25 @@ class Worker:
             self.local.daily=(AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols,
                                                selected_market_only=c.broad)
                               if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
-            self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account)
+            self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account,c.max_positions)
         if not getattr(self.local,'broker',None):
             c=self.config
             broker=(self.broker_factory(self.local.daily) if self.broker_factory else
                 CapitalDemo(key=c.key,user=c.user,password=c.password,account_id=c.account,
                             daily_controller=self.local.daily,armed=c.armed,opener=self.paced_open,
                             entry_guard=(lambda:self.trial_budget().require_entry(self.clock())) if c.trial else None))
+            broker.configure_entries(c.max_positions,self.local.journal.owned)
             broker.login()
             self.local.broker=broker
         return self.local.broker,self.local.journal
 
     def positions(self):
+        # Serialize reconciliation/closures with entry reservations and their
+        # confirmations. News and paid analysis do not hold this lock.
+        with self.order_lock:
+            return self._positions()
+
+    def _positions(self):
         broker,journal=self.resources()
         state=broker.account_state()
         previously_owned=journal.owned() if self.config.trial else {}
@@ -264,6 +277,21 @@ class Worker:
             self.trial_active()
         return usable
 
+    def entry_state(self,broker,journal):
+        with self.order_lock:
+            state=broker.account_state()
+            return state,journal.reconcile(state)
+
+    def capacity_reason(self,epic,state,reconciled):
+        if (state['working_orders'] or reconciled['unresolved']
+                or reconciled['unknown'] or reconciled['changed']):
+            return 'account_ownership_or_order_review'
+        if len(state['positions'])>=self.config.max_positions:
+            return 'pair_position_limit'
+        if any(plan['epic']!=epic for plan in reconciled['owned'].values()):
+            return 'other_pair_open'
+        return None
+
     def news(self):
         if not hasattr(self.local,'news'):
             self.local.news=(self.news_factory() if self.news_factory else
@@ -288,8 +316,7 @@ class Worker:
         if self.config.broad:
             return self.broad_opportunities()
         broker,journal=self.resources()
-        state=broker.account_state()
-        reconciled=journal.reconcile(state)
+        state,reconciled=self.entry_state(broker,journal)
         self.gate.stopped(state['daily']['stopped'])
         epics=list(self.config.symbols)
         epic=epics[self.rotation%len(epics)]
@@ -344,10 +371,9 @@ class Worker:
         # must not prevent observation of the remaining markets.
         if self.rotation%len(epics):
             return True
-        state=broker.account_state()
-        reconciled=journal.reconcile(state)
+        state,reconciled=self.entry_state(broker,journal)
         self.gate.stopped(state['daily']['stopped'])
-        if state['positions'] or state['working_orders'] or reconciled['unresolved']:
+        if state['working_orders'] or reconciled['unresolved'] or reconciled['unknown'] or reconciled['changed']:
             self.emit('entry_blocked',reason='account_not_flat_or_unresolved')
             return True
         eligible=[]
@@ -356,7 +382,8 @@ class Worker:
                 ctx=value['context']
                 articles=relevant_articles(candidate,self.articles.get(candidate,[]),self.clock())
                 if (value['score']>0 and ctx['execution_supported'] and articles
-                        and 0<=self.clock()-ctx['collected_at']<=300):
+                        and 0<=self.clock()-ctx['collected_at']<=300
+                        and self.capacity_reason(candidate,state,reconciled) is None):
                     eligible.append((value['score'],candidate,articles))
         eligible.sort(key=lambda item:(-item[0],item[1]))
         self.emit('universe_ranked',scanned=len(epics),available=len(self.candidates),
@@ -442,8 +469,7 @@ class Worker:
         broker,journal=self.resources()
         if self.config.risk_mode=='auto':
             self.local.daily.activate(epic)
-        state=broker.account_state()
-        reconciled=journal.reconcile(state)
+        state,reconciled=self.entry_state(broker,journal)
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal,recommendation=result)
 
     def evaluate(self,epic,context,articles,state,reconciled,broker,journal,recommendation=None):
@@ -457,8 +483,9 @@ class Worker:
                       remaining=state['daily']['remaining'],stressed=state['daily']['stressed'],
                       market_data_ready=state['daily']['ready'])
         self.emit('market_data_ready',epic=epic,closed_bars={k:len(v['candles']) for k,v in context['timeframes'].items()})
-        if not articles or state['positions'] or state['working_orders'] or reconciled['unresolved'] or not state['daily'].get('ready',True):
-            self.emit('entry_blocked',epic=epic,reason='news_or_account_gate')
+        capacity=self.capacity_reason(epic,state,reconciled)
+        if not articles or capacity or not state['daily'].get('ready',True):
+            self.emit('entry_blocked',epic=epic,reason=capacity or 'news_or_daily_gate')
             return True  # observations usable; no entry performed
         self.gate.success('opportunities',self.clock())
         if not self.gate.may_enter(self.clock()):
@@ -469,8 +496,9 @@ class Worker:
         if recommendation is not None:
             if not self.trial_active():
                 return True
-            outcome=journal.process(str(context['timeframes']['MINUTE_15']['candles'][-1]['t']),
-                                    recommendation,context,broker,armed=self.config.armed)
+            with self.order_lock:
+                outcome=journal.process(str(context['timeframes']['MINUTE_15']['candles'][-1]['t']),
+                                        recommendation,context,broker,armed=self.config.armed)
             self.emit('entry_'+outcome['status'],epic=epic,**{k:v for k,v in outcome.items() if k!='status'})
             return True
         if not hasattr(self.local,'ai'):
@@ -505,7 +533,8 @@ class Worker:
         self.emit('analysis_ready',epic=epic,action=result['action'],assessment=result['assessment'],reason=result['reason'])
         if result['action'] in {'BUY','SELL'}:
             self.study_candidate(context,rank(context),result)
-        outcome=journal.process(str(candle),result,context,broker,armed=self.config.armed)
+        with self.order_lock:
+            outcome=journal.process(str(candle),result,context,broker,armed=self.config.armed)
         self.emit('entry_'+outcome['status'],epic=epic,**{k:v for k,v in outcome.items() if k!='status'})
         return True
 
@@ -538,6 +567,10 @@ def main():
             analysis_interval_seconds=config.analysis_interval,
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
             spread_study='observe_only_20pct_unchanged',
+            pair_entries=config.max_positions,
+            pair_risk_fraction=.0025 if config.max_positions==2 else .00125,
+            entry_policy='staged_owned_same_pair' if config.max_positions==2 else 'flat_only',
+            leverage_policy='broker_current_no_probability_increase',
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):
