@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import tempfile
+import hashlib
 import threading
 import unittest
 from datetime import datetime, timezone
@@ -31,6 +32,13 @@ def original_checkpoint(path,stamp=NOW):
                    (TRIAL_ID,APPROVED_ACCOUNT,stamp,stamp+DURATION,stamp,LIMIT_NANO))
 
 
+def authorize_test_account(test):
+    """Use a synthetic account pin without publishing private account IDs."""
+    pin=patch('smarttrader.trial.ACCOUNT_SHA256',hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest())
+    pin.start()
+    test.addCleanup(pin.stop)
+
+
 def response(action='WAIT', inp=6000, out=500, cached=0, status='completed'):
     result = (recommendation() if action=='BUY' else
               dict(action='WAIT',assessment='reject',stop_level=0,target_level=0,
@@ -53,6 +61,7 @@ class Response:
 
 class TrialBudgetTests(unittest.TestCase):
     def setUp(self):
+        authorize_test_account(self)
         self.tmp=tempfile.TemporaryDirectory()
         self.path=self.tmp.name+'/trial.sqlite'
         self.budgets=[]
@@ -231,6 +240,7 @@ class TrialBudgetTests(unittest.TestCase):
 
 class TrialLedgerGuardTests(unittest.TestCase):
     def setUp(self):
+        authorize_test_account(self)
         self.tmp=tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path=self.tmp.name+'/trial.sqlite'
@@ -353,6 +363,7 @@ class TrialLedgerGuardTests(unittest.TestCase):
 
 class TrialWorkerTests(unittest.TestCase):
     def setUp(self):
+        authorize_test_account(self)
         self.tmp=tempfile.TemporaryDirectory()
         self.now=NOW
         self.events=[]

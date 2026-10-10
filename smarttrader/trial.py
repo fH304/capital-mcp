@@ -9,11 +9,17 @@ with valid provider usage; lost responses keep their full reservation.
 The limit covers this worker's token charges, not taxes, hosting or other apps.
 """
 import math
+import hashlib
+import json
+import os
 import sqlite3
 import uuid
 from pathlib import Path
 
-APPROVED_ACCOUNT = '330438437114294558'
+# Pin the same authorization without publishing the account number.
+# The unconfigured placeholder is never authorized by ACCOUNT_SHA256.
+APPROVED_ACCOUNT = os.environ.get('BOT_ACCOUNT_ID','000000000000000001')
+ACCOUNT_SHA256 = '3696d021ff7525e075505e3593ae783a9ae402add49e83fd9dba6cf5e82c2e09'
 TRIAL_ID = '2026-10-08-all21-72h-20usd'
 MODEL = 'gpt-4.1-mini-2025-04-14'
 DURATION = 72 * 3600
@@ -27,6 +33,11 @@ INPUT_RATE, CACHED_RATE, OUTPUT_RATE = 400, 100, 1600  # nano USD/token
 MAX_CHARGE = MAX_INPUT * INPUT_RATE + MAX_OUTPUT * OUTPUT_RATE
 
 
+def is_approved_account(account):
+    return (isinstance(account,str)
+            and hashlib.sha256(account.encode()).hexdigest()==ACCOUNT_SHA256)
+
+
 class TrialStopped(RuntimeError):
     pass
 
@@ -38,6 +49,7 @@ class TrialEntryBlocked(TrialStopped):
 class TrialBudget:
     def __init__(self, path, account, now):
         self.account = account
+        self.path = Path(path).resolve()
         self._time(now)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=10)
@@ -60,6 +72,10 @@ class TrialBudget:
                 trial_id TEXT, account TEXT, initial_equity REAL NOT NULL,
                 latest_equity REAL NOT NULL, observed_at REAL NOT NULL,
                 open_positions INTEGER NOT NULL, PRIMARY KEY(trial_id,account));
+            CREATE TABLE IF NOT EXISTS trial_recoveries(
+                trial_id TEXT, account TEXT, checkpoint TEXT NOT NULL,
+                checkpoint_sha TEXT NOT NULL, applied_at REAL NOT NULL,
+                PRIMARY KEY(trial_id,account));
         ''')
         # Missing state is a blocked placeholder, never a fresh funded run.
         # Preserve any surviving calls and original/replaced row for review.
@@ -80,16 +96,24 @@ class TrialBudget:
         if row is None:
             raise TrialStopped('trial_state_missing')
         start,end,last,limit,reason = row
-        identity_ok = (self.account == APPROVED_ACCOUNT and start == AUTHORIZED_STARTED_AT
+        identity_ok = (self.account == APPROVED_ACCOUNT and is_approved_account(self.account)
+                       and start == AUTHORIZED_STARTED_AT
                        and end == AUTHORIZED_STARTED_AT+DURATION and limit == LIMIT_NANO)
+        checkpoint,recovery_error = self._recovery()
+        if recovery_error:
+            reason = recovery_error
         ledger_verified = identity_ok and reason not in {
-            'trial_state_missing','trial_ledger_replaced','unauthorized_trial_account'}
+            'trial_state_missing','trial_ledger_replaced','unauthorized_trial_account',
+            'trial_recovery_invalid','trial_recovery_state_missing'}
         used,pending,requests = self.db.execute(
             'SELECT COALESCE(SUM(COALESCE(charged_nano,reserved_nano)),0),'
             'COALESCE(SUM(CASE WHEN charged_nano IS NULL THEN reserved_nano ELSE 0 END),0),COUNT(*) '
             'FROM trial_calls WHERE trial_id=? AND account=?', (TRIAL_ID,self.account)).fetchone()
+        local_used = used
+        if checkpoint:
+            used += checkpoint['budget_debit_nano']
         if not reason:
-            if self.account != APPROVED_ACCOUNT:
+            if self.account != APPROVED_ACCOUNT or not is_approved_account(self.account):
                 reason = 'unauthorized_trial_account'
             elif not identity_ok:
                 reason = 'trial_ledger_replaced'
@@ -102,7 +126,7 @@ class TrialBudget:
         if mutate:
             self.db.execute('UPDATE trial_runs SET last_seen=?,stop_reason=? '
                             'WHERE trial_id=? AND account=?', (max(last,now),reason,TRIAL_ID,self.account))
-        return dict(trial_id=TRIAL_ID,trial_active=not bool(reason),stop_reason=reason,
+        result = dict(trial_id=TRIAL_ID,trial_active=not bool(reason),stop_reason=reason,
                     started_at=start,ends_at=end,budget_usd=limit/1e9,
                     authorized_started_at=AUTHORIZED_STARTED_AT,
                     authorized_ends_at=AUTHORIZED_STARTED_AT+DURATION,
@@ -110,6 +134,98 @@ class TrialBudget:
                     accounted_usd_scope='original_trial' if ledger_verified else 'available_local_fragment',
                     accounted_usd=used/1e9,unreconciled_usd=pending/1e9,
                     remaining_usd=max(0,limit-used)/1e9 if ledger_verified else None,requests=requests)
+        if checkpoint:
+            result.update(accounted_usd_scope='provider_checkpoint_plus_local',
+                          history_complete=False,budget_evidence='matched_provider_exports',
+                          historical_cost_usd=checkpoint['cost_nano']/1e9,
+                          historical_budget_debit_usd=checkpoint['budget_debit_nano']/1e9,
+                          local_accounted_usd=local_used/1e9,
+                          requests_scope='available_local_calls',
+                          export_requests=checkpoint['export_requests'],
+                          export_observed_at=checkpoint['observed_at'],
+                          costs_sha256=checkpoint['costs_sha256'],
+                          usage_sha256=checkpoint['usage_sha256'])
+        return result
+
+    @property
+    def recovery_guard(self):
+        return self.path.with_name(self.path.name+'.recovery.json')
+
+    def _recovery(self):
+        """A durable receipt prevents an old checkpoint refunding a lost DB."""
+        exists = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                 "AND name='trial_recoveries'").fetchone()
+        row = (self.db.execute('SELECT checkpoint,checkpoint_sha FROM trial_recoveries '
+                              'WHERE trial_id=? AND account=?',(TRIAL_ID,self.account)).fetchone()
+               if exists else None)
+        if row is None:
+            return (None,'trial_recovery_state_missing') if self.recovery_guard.exists() else (None,None)
+        try:
+            from .recovery import validate_checkpoint, canonical
+            checkpoint = json.loads(row[0])
+            validate_checkpoint(checkpoint)
+            encoded = canonical(checkpoint)
+            if (hashlib.sha256(encoded).hexdigest()!=row[1]
+                    or self.recovery_guard.read_bytes()!=encoded):
+                raise ValueError('Recovery receipt differs')
+            return checkpoint,None
+        except (OSError,ValueError,TypeError,KeyError):
+            return None,'trial_recovery_invalid'
+
+    def recover_missing(self, checkpoint, now, flat_state):
+        """Explicit reviewed recovery. Never called by worker startup."""
+        from .recovery import validate_checkpoint, canonical
+        validate_checkpoint(checkpoint)
+        self._time(now)
+        if (flat_state.get('account_id')!=APPROVED_ACCOUNT or not is_approved_account(self.account)
+                or flat_state.get('positions')!=[] or flat_state.get('working_orders')!=[]
+                or type(flat_state.get('observed_at')) not in (int,float)
+                or not math.isfinite(flat_state['observed_at'])
+                or not 0 <= now-flat_state['observed_at'] <= 10):
+            raise TrialStopped('recovery_requires_fresh_flat_demo_account')
+        if not 0 <= now-checkpoint['observed_at'] <= 6*3600:
+            raise TrialStopped('recovery_export_not_recent')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            state=self._status(now,mutate=False)
+            if (self.account!=APPROVED_ACCOUNT or not is_approved_account(self.account)
+                    or state['stop_reason']!='trial_state_missing'
+                    or state['started_at']!=AUTHORIZED_STARTED_AT
+                    or state['ends_at']!=AUTHORIZED_STARTED_AT+DURATION
+                    or state['budget_usd']!=LIMIT_NANO/1e9 or self.recovery_guard.exists()):
+                raise TrialStopped('recovery_requires_original_missing_placeholder')
+            last=self.db.execute('SELECT last_seen FROM trial_runs WHERE trial_id=? AND account=?',
+                                 (TRIAL_ID,self.account)).fetchone()[0]
+            if now+1 < last or not AUTHORIZED_STARTED_AT <= now < AUTHORIZED_STARTED_AT+DURATION:
+                raise TrialStopped('recovery_outside_original_duration')
+            debit=checkpoint['budget_debit_nano']
+            local=self.db.execute('SELECT COALESCE(SUM(COALESCE(charged_nano,reserved_nano)),0) '
+                                  'FROM trial_calls WHERE trial_id=? AND account=?',
+                                  (TRIAL_ID,self.account)).fetchone()[0]
+            if debit+local+MAX_CHARGE > LIMIT_NANO:
+                raise TrialStopped('recovery_budget_exhausted')
+            encoded=canonical(checkpoint)
+            # Guard first: a crash before DB commit stays blocked, never funded.
+            fd=os.open(self.recovery_guard,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            with os.fdopen(fd,'wb') as receipt:
+                receipt.write(encoded)
+                receipt.flush()
+                os.fsync(receipt.fileno())
+            parent_fd=os.open(self.path.parent,os.O_RDONLY|os.O_DIRECTORY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            self.db.execute('INSERT INTO trial_recoveries VALUES(?,?,?,?,?)',
+                            (TRIAL_ID,self.account,encoded.decode(),hashlib.sha256(encoded).hexdigest(),now))
+            self.db.execute('UPDATE trial_runs SET stop_reason=NULL,last_seen=? '
+                            'WHERE trial_id=? AND account=?',(max(last,now),TRIAL_ID,self.account))
+            result=self._status(now,mutate=False)
+            self.db.commit()
+            return result
+        except Exception:
+            self.db.rollback()
+            raise
 
     def status(self, now):
         self._time(now)
@@ -234,6 +350,7 @@ class TrialBudget:
         cls._time(now)
         obj=object.__new__(cls)
         obj.account=account
+        obj.path=Path(path).resolve()
         obj.db=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=10)
         try:
             return obj._summary(obj._status(now,mutate=False))

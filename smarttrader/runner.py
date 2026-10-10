@@ -22,7 +22,7 @@ from .news import NewsClient, timestamp
 from .universe import MARKETS, relevant_articles, rank
 from .schedule import MarketSchedule
 from .spreadstudy import SpreadStudy
-from .trial import APPROVED_ACCOUNT, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
+from .trial import is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
 
 
 def log(event, **fields):
@@ -63,11 +63,11 @@ class Config:
             raise ValueError('SMART_MARKETS must be single or broad')
         # This account's 72h/$20 trial was explicitly authorized on 2026-10-08.
         # Other accounts keep the previous defaults. Restart never renews it.
-        trial_flag=env.get('SMART_TRIAL_ENABLED','1' if self.account==APPROVED_ACCOUNT and self.broad else '0')
+        trial_flag=env.get('SMART_TRIAL_ENABLED','1' if is_approved_account(self.account) and self.broad else '0')
         if trial_flag not in {'0','1'}:
             raise ValueError('SMART_TRIAL_ENABLED must be 0 or 1')
         self.trial=trial_flag=='1'
-        if self.trial and (self.account!=APPROVED_ACCOUNT or not self.broad):
+        if self.trial and (not is_approved_account(self.account) or not self.broad):
             raise ValueError('Trial is authorized for the approved broad demo account only')
         self.analysis_mode=env.get('SMART_ANALYSIS_MODE','budgeted')
         if self.analysis_mode not in {'continuous','budgeted'}:
@@ -538,7 +538,7 @@ def main():
             analysis_interval_seconds=config.analysis_interval,
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
             spread_study='observe_only_20pct_unchanged',
-            trial_ledger_guard='original_checkpoint_required',state_directory=str(config.directory))
+            trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):
                 repeats=len(config.symbols) if config.broad and name=='opportunities' else 1
