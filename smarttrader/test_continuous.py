@@ -42,7 +42,7 @@ class ContinuousTests(unittest.TestCase):
         self.news=[article('Euro', ['EURUSD.FOREX'])]
     def tearDown(self):
         for worker in self.workers:
-            for name in ('journal','daily','ai','news','schedule'):
+            for name in ('journal','daily','ai','news','schedule','spread_study'):
                 obj=getattr(worker.local,name,None)
                 if obj and hasattr(obj,'db'):
                     obj.db.close()

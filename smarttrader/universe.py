@@ -6,6 +6,24 @@ Every contract and executable quote is checked by Capital at runtime.
 import math
 import re
 
+SPREAD_ATR_LIMIT = .2
+
+
+def spread_metrics(context):
+    """Price-unit diagnostics; a zero ATR has no finite spread/ATR ratio."""
+    bars=context['timeframes']['MINUTE_15']['candles']
+    ranges=[max(b['h']-b['l'],abs(b['h']-p['c']),abs(b['l']-p['c']))
+            for p,b in zip(bars,bars[1:])][-14:]
+    atr=sum(ranges)/len(ranges)
+    spread=context['ask']-context['bid']
+    if not all(math.isfinite(v) for v in (atr,spread)) or spread<0:
+        raise ValueError('Invalid spread observations')
+    ratio=spread/atr if atr>0 else None
+    reason=('zero_atr' if atr<=0 else
+            'spread_above_limit' if ratio>SPREAD_ATR_LIMIT else 'within_limit')
+    return dict(spread=spread,atr_15=atr,spread_to_atr=ratio,
+                spread_atr_limit=SPREAD_ATR_LIMIT,spread_gate_reason=reason)
+
 
 MARKETS = {
     'EURUSD': ('forex', ('EURUSD.FOREX',), ('eur/usd', 'eurusd', 'euro dollar')),
@@ -54,19 +72,18 @@ def rank(context):
     """Heuristic trend agreement after spread, not a return/profit probability."""
     frames=context['timeframes']
     bars=frames['MINUTE_15']['candles']
-    ranges=[max(b['h']-b['l'], abs(b['h']-p['c']), abs(b['l']-p['c']))
-            for p,b in zip(bars,bars[1:])][-14:]
-    atr=sum(ranges)/len(ranges)
-    spread=context['ask']-context['bid']
-    if atr<=0 or spread/atr>.2:
-        return dict(score=0.0, reason='spread_or_flat_market')
+    diagnostics=spread_metrics(context)
+    atr,spread=diagnostics['atr_15'],diagnostics['spread']
     moves=[(v['candles'][-1]['c']-v['candles'][-6]['c'])/v['candles'][-6]['c']
            for v in frames.values()]
-    if not (all(x>0 for x in moves) or all(x<0 for x in moves)):
-        return dict(score=0.0, reason='timeframes_disagree')
+    diagnostics['timeframes_agree']=all(x>0 for x in moves) or all(x<0 for x in moves)
+    if diagnostics['spread_gate_reason']!='within_limit':
+        return dict(score=0.0,reason='spread_or_flat_market',**diagnostics)
+    if not diagnostics['timeframes_agree']:
+        return dict(score=0.0,reason='timeframes_disagree',**diagnostics)
     normalized=abs(moves[0])/(atr/bars[-1]['c'])
     # Avoid ranking runaway volatility as unbounded opportunity.
     score=min(normalized, 5)/(1+spread/atr)
     if not math.isfinite(score):
         raise ValueError('Invalid candidate score')
-    return dict(score=score, reason='trend_agreement_after_spread')
+    return dict(score=score,reason='trend_agreement_after_spread',**diagnostics)

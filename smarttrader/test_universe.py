@@ -163,7 +163,7 @@ class BroadWorkerTests(unittest.TestCase):
                 self.assertIn('market_unavailable',[event for event,_ in events])
                 self.assertFalse(any(m=='POST' and u.endswith('/positions') for m,u,_ in transport.calls))
             finally:
-                for name in ('daily','journal','scans'):
+                for name in ('daily','journal','scans','spread_study'):
                     obj=getattr(worker.local,name,None)
                     if obj:
                         obj.close()

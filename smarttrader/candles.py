@@ -31,7 +31,7 @@ def utc_stamp(value):
         raise MarketDataError('Invalid broker UTC candle timestamp') from None
 
 
-def normalize_candles(rows, resolution, now, count=32):
+def normalize_candles(rows, resolution, now, count=32, *, include_sides=False):
     if resolution not in RESOLUTIONS or not isinstance(rows,list) or type(count) is not int or not 20<=count<=40:
         raise MarketDataError('Invalid candle collection request')
     duration=RESOLUTIONS[resolution]
@@ -56,6 +56,10 @@ def normalize_candles(rows, resolution, now, count=32):
                         and row['lowPrice'][side]<=row['closePrice'][side]<=row['highPrice'][side]):
                     raise MarketDataError('Invalid candle OHLC range')
             candle=dict(t=stamp,**prices)
+            if include_sides:
+                for side in ('bid','ask'):
+                    candle[side]={key:row[source][side] for source,key in
+                                  (('openPrice','o'),('highPrice','h'),('lowPrice','l'),('closePrice','c'))}
             volume=row.get('lastTradedVolume')
             if volume is not None:
                 candle['broker_volume']=numeric(volume,positive=False)

@@ -21,6 +21,7 @@ from .monitor import EntryGate, Monitor, PositionView, exit_decision
 from .news import NewsClient, timestamp
 from .universe import MARKETS, relevant_articles, rank
 from .schedule import MarketSchedule
+from .spreadstudy import SpreadStudy
 from .trial import APPROVED_ACCOUNT, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
 
 
@@ -149,6 +150,39 @@ class Worker:
             self.emit('trial_stopped',**self.trial_budget().summary(self.clock()))
         return status['trial_active']
 
+    def spread_study(self):
+        if not hasattr(self.local,'spread_study'):
+            self.local.spread_study=SpreadStudy(str(self.config.directory/'spread.sqlite'),self.config.account)
+        return self.local.spread_study
+
+    @staticmethod
+    def spread_fields(scoring):
+        return {k:scoring[k] for k in ('spread','atr_15','spread_to_atr','spread_atr_limit',
+                                      'spread_gate_reason','timeframes_agree')}
+
+    def observe_spread(self,context,scoring,bars=()):
+        recorded=False
+        try:
+            self.spread_study().observe(context,scoring,self.clock(),bars)
+            recorded=True
+        except Exception as error:
+            # Study failures are observational; they cannot weaken or replace entry gates.
+            self.emit('spread_study_failed',epic=context['epic'],error_type=type(error).__name__)
+        self.emit('spread_metrics',epic=context['epic'],study_recorded=recorded,
+                  candle=context['timeframes']['MINUTE_15']['candles'][-1]['t'],
+                  quote_time=context['quote_time'],
+                  quote_currency=context.get('quote_currency','USD'),**self.spread_fields(scoring))
+
+    def study_candidate(self,context,scoring,result):
+        try:
+            costs=self.spread_study().candidate(context,scoring,result,self.clock())
+            if costs['recorded']:
+                self.emit('entry_candidate_costs',epic=context['epic'],
+                          technical_passed=scoring['score']>0,
+                          **dict(costs,**self.spread_fields(scoring)))
+        except Exception as error:
+            self.emit('spread_study_failed',epic=context['epic'],error_type=type(error).__name__)
+
     def paced_open(self,request,timeout):
         from urllib.request import build_opener
         from .news import NoRedirect
@@ -264,9 +298,12 @@ class Worker:
             articles=[dict(a,title=a['title'][:500],content=a['content'][:1000])
                       for a in sorted(self.articles.get(epic,[]),key=lambda x:timestamp(x['published_utc']),reverse=True)
                       if 0<=self.clock()-timestamp(a['published_utc'])<=21600][:5]
-        context=MarketCollector(broker,self.clock).collect_market(epic)
+        collector=MarketCollector(broker,self.clock)
+        context=collector.collect_market(epic)
+        scoring=rank(context)
+        self.observe_spread(context,scoring,getattr(collector,'execution_candles',()))
         if self.config.continuous:
-            return self.monitor_market(epic,context,rank(context),articles)
+            return self.monitor_market(epic,context,scoring,articles)
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
 
     def broad_opportunities(self):
@@ -276,14 +313,17 @@ class Worker:
         self.rotation+=1
         observed=None
         try:
-            context=MarketCollector(broker,self.clock).collect_market(epic)
+            collector=MarketCollector(broker,self.clock)
+            context=collector.collect_market(epic)
             scoring=rank(context)
+            self.observe_spread(context,scoring,getattr(collector,'execution_candles',()))
             self.candidates[epic]=dict(context=context,**scoring)
             if self.config.risk_mode=='auto':
                 self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
             self.emit('market_scanned',epic=epic,asset_class=MARKETS[epic][0],
                       score=scoring['score'],reason=scoring['reason'],
-                      execution_supported=context['execution_supported'],quote_currency=context['quote_currency'])
+                      execution_supported=context['execution_supported'],quote_currency=context['quote_currency'],
+                      **self.spread_fields(scoring))
             observed=(context,scoring)
         except Exception as error:
             self.candidates.pop(epic,None)
@@ -383,6 +423,8 @@ class Worker:
         if result['action']=='WAIT':
             self.emit('entry_wait',epic=epic)
             return True
+        if context.get('execution_supported',True) and articles:
+            self.study_candidate(context,scoring,result)
         if not context.get('execution_supported',True) or not articles or scoring['score']<=0:
             blocked_filters=[]
             if not context.get('execution_supported',True):
@@ -395,7 +437,7 @@ class Worker:
                       blocked_filters=blocked_filters,analysis_action=result['action'],
                       execution_supported=context.get('execution_supported',True),
                       news_articles=len(articles),technical_score=scoring['score'],
-                      technical_reason=scoring['reason'],candle=candle)
+                      technical_reason=scoring['reason'],candle=candle,**self.spread_fields(scoring))
             return True
         broker,journal=self.resources()
         if self.config.risk_mode=='auto':
@@ -461,6 +503,8 @@ class Worker:
         result=self.local.ai.analyze(context)
         validate_context(context,self.clock())
         self.emit('analysis_ready',epic=epic,action=result['action'],assessment=result['assessment'],reason=result['reason'])
+        if result['action'] in {'BUY','SELL'}:
+            self.study_candidate(context,rank(context),result)
         outcome=journal.process(str(candle),result,context,broker,armed=self.config.armed)
         self.emit('entry_'+outcome['status'],epic=epic,**{k:v for k,v in outcome.items() if k!='status'})
         return True
@@ -492,7 +536,8 @@ def main():
             market_mode='broad' if config.broad else 'single',markets=len(config.symbols),
             analysis_mode=config.analysis_mode,daily_analysis_cap=config.calls,
             analysis_interval_seconds=config.analysis_interval,
-            currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES))
+            currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
+            spread_study='observe_only_20pct_unchanged')
         if args.once:
             for name in ('positions','news','opportunities'):
                 repeats=len(config.symbols) if config.broad and name=='opportunities' else 1

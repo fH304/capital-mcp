@@ -20,6 +20,10 @@ class MarketCollector:
         frames={resolution:normalize_candles(rows,resolution,now) for resolution,rows in histories.items()}
         validate_frames(frames,now)
         fresh(quote['quote_time'],now,30,'collected quote')
+        # Reuse already-fetched executable sides for the read-only spread study.
+        # They are kept outside the AI input, so its token/cost policy is unchanged.
+        self.execution_candles=normalize_candles(histories['MINUTE_15'],'MINUTE_15',now,
+                                                include_sides=True)['candles']
         return dict(epic=epic,bid=quote['bid'],ask=quote['ask'],quote_time=quote['quote_time'],
                      collected_at=now,timeframes=frames,
                      execution_supported=quote.get('execution_supported',True),
