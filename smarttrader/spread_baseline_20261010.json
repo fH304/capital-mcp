@@ -1,0 +1,1076 @@
+{
+  "as_of": 1791602734,
+  "current_spread_atr_limit": 0.2,
+  "threshold_changed": false,
+  "source": "Capital historical M15 bid/ask close prices",
+  "markets": {
+    "USDCAD": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.4031696273077393,
+        "p90": 0.6349206349205614,
+        "maximum": 3.7889039242218074
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 166,
+        "within_limit": 20
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 20,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 57,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 130,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "EURUSD": {
+      "closed_bars": 200,
+      "observations": 182,
+      "gap_skips": 4,
+      "first_bar": 1791398700.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 182,
+        "median": 0.13379893162156725,
+        "p90": 0.21052631578953393,
+        "maximum": 0.6850152905199688
+      },
+      "spread_gate_counts": {
+        "within_limit": 149,
+        "spread_above_limit": 33
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 45,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 149,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 179,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 181,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "NZDUSD": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.46718634001478776,
+        "p90": 0.6451612903230296,
+        "maximum": 3.5089514066493765
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 186
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 17,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 125,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "GBPUSD": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.23512995567325368,
+        "p90": 0.3714285714284575,
+        "maximum": 3.768804433887472
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 114,
+        "within_limit": 72
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 72,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 121,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 179,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "AUDUSD": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.1844182885564849,
+        "p90": 0.26168224299045506,
+        "maximum": 2.0989505247374147
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 68,
+        "within_limit": 118
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 13,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 118,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 179,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 180,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "USDJPY": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.1706453935978544,
+        "p90": 0.26394344069125,
+        "maximum": 1.9178082191782895
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 50,
+        "within_limit": 136
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 17,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 136,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 176,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 179,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "US500": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.12669942669950318,
+        "p90": 0.18340611353722472,
+        "maximum": 0.2745098039215654
+      },
+      "spread_gate_counts": {
+        "within_limit": 176,
+        "spread_above_limit": 10
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 79,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 176,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "USDCHF": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.3578537641088507,
+        "p90": 0.5247657295850624,
+        "maximum": 6.286407766990334
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 186
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 66,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 164,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "US100": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.052814652947808516,
+        "p90": 0.07583508877517181,
+        "maximum": 0.11421578625331445
+      },
+      "spread_gate_counts": {
+        "within_limit": 186
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 180,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "US30": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.04794520547945205,
+        "p90": 0.09430784776018815,
+        "maximum": 0.2455278849526432
+      },
+      "spread_gate_counts": {
+        "within_limit": 183,
+        "spread_above_limit": 3
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 169,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 183,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "UK100": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.20929749249715618,
+        "p90": 0.6720000000000195,
+        "maximum": 1.0526315789472822
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 94,
+        "within_limit": 92
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 66,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 92,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 107,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 134,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "J225": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.07030784508440913,
+        "p90": 0.15300546448087432,
+        "maximum": 0.4250581924906423
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 8,
+        "within_limit": 178
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 148,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 178,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 183,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 186,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "DE40": {
+      "closed_bars": 200,
+      "observations": 186,
+      "gap_skips": 0,
+      "first_bar": 1791399600.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 186,
+        "median": 0.07361332271762251,
+        "p90": 0.4755838641188959,
+        "maximum": 0.8763693270735823
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 72,
+        "within_limit": 114
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 103,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 114,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 154,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 168,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "BTCUSD": {
+      "closed_bars": 199,
+      "observations": 185,
+      "gap_skips": 0,
+      "first_bar": 1791423000.0,
+      "last_bar": 1791601200.0,
+      "spread_to_atr": {
+        "samples": 185,
+        "median": 0.26960406716992824,
+        "p90": 0.5329475807986435,
+        "maximum": 0.6947546027492212
+      },
+      "spread_gate_counts": {
+        "within_limit": 57,
+        "spread_above_limit": 128
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 57,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 109,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 165,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "ETHUSD": {
+      "closed_bars": 199,
+      "observations": 185,
+      "gap_skips": 0,
+      "first_bar": 1791423000.0,
+      "last_bar": 1791601200.0,
+      "spread_to_atr": {
+        "samples": 185,
+        "median": 0.2411654690422293,
+        "p90": 0.4275741710296738,
+        "maximum": 0.6283662477558383
+      },
+      "spread_gate_counts": {
+        "within_limit": 70,
+        "spread_above_limit": 115
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 14,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 70,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 134,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 170,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "LTCUSD": {
+      "closed_bars": 199,
+      "observations": 185,
+      "gap_skips": 0,
+      "first_bar": 1791423000.0,
+      "last_bar": 1791601200.0,
+      "spread_to_atr": {
+        "samples": 185,
+        "median": 1.3934681181959747,
+        "p90": 1.8869565217391584,
+        "maximum": 2.059770114942552
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 185
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 7,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "SOLUSD": {
+      "closed_bars": 199,
+      "observations": 185,
+      "gap_skips": 0,
+      "first_bar": 1791423000.0,
+      "last_bar": 1791601200.0,
+      "spread_to_atr": {
+        "samples": 185,
+        "median": 1.1597224815348626,
+        "p90": 1.7704264555961902,
+        "maximum": 2.3116519329528464
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 185
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 6,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "XRPUSD": {
+      "closed_bars": 199,
+      "observations": 185,
+      "gap_skips": 0,
+      "first_bar": 1791423000.0,
+      "last_bar": 1791601200.0,
+      "spread_to_atr": {
+        "samples": 185,
+        "median": 1.2767551508105746,
+        "p90": 2.123824959481397,
+        "maximum": 2.871374157632539
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 185
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 12,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "GOLD": {
+      "closed_bars": 200,
+      "observations": 178,
+      "gap_skips": 8,
+      "first_bar": 1791392400.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 178,
+        "median": 0.07894231347110253,
+        "p90": 0.11223344556677856,
+        "maximum": 0.17213114754098363
+      },
+      "spread_gate_counts": {
+        "within_limit": 178
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 142,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 178,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 178,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 178,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "SILVER": {
+      "closed_bars": 200,
+      "observations": 178,
+      "gap_skips": 8,
+      "first_bar": 1791392400.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 178,
+        "median": 0.3024412590247791,
+        "p90": 0.4497269514937764,
+        "maximum": 0.7748184019370281
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 167,
+        "within_limit": 11
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 11,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 88,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 171,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    },
+    "PLATINUM": {
+      "closed_bars": 200,
+      "observations": 178,
+      "gap_skips": 8,
+      "first_bar": 1791392400.0,
+      "last_bar": 1791578700.0,
+      "spread_to_atr": {
+        "samples": 178,
+        "median": 1.256140559482832,
+        "p90": 2.1314387211367998,
+        "maximum": 5.004915542050254
+      },
+      "spread_gate_counts": {
+        "spread_above_limit": 178
+      },
+      "comparison": [
+        {
+          "limit": 0.1,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.2,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.3,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        },
+        {
+          "limit": 0.5,
+          "spread_passed": 0,
+          "paper_candidates_accepted": 0,
+          "paper_completed": 0,
+          "mean_price_R": null,
+          "paper_status_counts": {}
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "historical close spread is a proxy, not the rejected order quote",
+    "cost-screen pass rates do not establish profitable entry thresholds",
+    "no historical AI stop/target plans or portfolio outcomes are fabricated"
+  ]
+}
