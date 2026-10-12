@@ -26,6 +26,13 @@ DURATION = 72 * 3600
 # Original deployed checkpoint, verified in the user's 2026-10-08 Render log.
 # A later deployment is not authorization for another 72 hours or another $20.
 AUTHORIZED_STARTED_AT = 1791483873.5271823
+# Explicitly authorized on 2026-10-12, extending the SAME trial through Friday.
+# End is exclusive: 2026-10-17 00:00 Asia/Dubai (2026-10-16 20:00 UTC).
+# The original ledger/receipt remain immutable; no budget or history is reset.
+EXTENSION_ID = '2026-10-12-through-friday-same-budget'
+EXTENSION_AUTHORIZED_AT = 1791818661.0
+EXTENSION_ORIGINAL_ENDS_AT = 1791743073.5271823
+EXTENDED_ENDS_AT = 1792180800.0
 LIMIT_NANO = 20 * 1_000_000_000
 MAX_INPUT = 1_047_576
 MAX_OUTPUT = 2000
@@ -99,9 +106,20 @@ class TrialBudget:
         identity_ok = (self.account == APPROVED_ACCOUNT and is_approved_account(self.account)
                        and start == AUTHORIZED_STARTED_AT
                        and end == AUTHORIZED_STARTED_AT+DURATION and limit == LIMIT_NANO)
+        extension_authorized = (self.account == APPROVED_ACCOUNT and is_approved_account(self.account)
+                                and AUTHORIZED_STARTED_AT+DURATION == EXTENSION_ORIGINAL_ENDS_AT
+                                and now >= EXTENSION_AUTHORIZED_AT)
+        authorized_end = (EXTENDED_ENDS_AT if extension_authorized
+                          else AUTHORIZED_STARTED_AT+DURATION)
+        effective_end = authorized_end if identity_ok else end
         checkpoint,recovery_error = self._recovery()
         if recovery_error:
             reason = recovery_error
+        # Only the superseded time stop can be lifted by this explicit grant.
+        # Missing/replaced ledgers, budget stops and usage failures stay blocked.
+        if (identity_ok and extension_authorized and not recovery_error
+                and reason == 'duration_elapsed' and now < effective_end):
+            reason = None
         ledger_verified = identity_ok and reason not in {
             'trial_state_missing','trial_ledger_replaced','unauthorized_trial_account',
             'trial_recovery_invalid','trial_recovery_state_missing'}
@@ -119,7 +137,7 @@ class TrialBudget:
                 reason = 'trial_ledger_replaced'
             elif now+1 < last or now < start:
                 reason = 'clock_moved_backwards'
-            elif now >= end:
+            elif now >= effective_end:
                 reason = 'duration_elapsed'
             elif used > limit or (reserve and used+MAX_CHARGE > limit):
                 reason = 'budget_exhausted'
@@ -127,13 +145,17 @@ class TrialBudget:
             self.db.execute('UPDATE trial_runs SET last_seen=?,stop_reason=? '
                             'WHERE trial_id=? AND account=?', (max(last,now),reason,TRIAL_ID,self.account))
         result = dict(trial_id=TRIAL_ID,trial_active=not bool(reason),stop_reason=reason,
-                    started_at=start,ends_at=end,budget_usd=limit/1e9,
+                    started_at=start,ends_at=effective_end,budget_usd=limit/1e9,
                     authorized_started_at=AUTHORIZED_STARTED_AT,
-                    authorized_ends_at=AUTHORIZED_STARTED_AT+DURATION,
+                    authorized_ends_at=authorized_end,
                     authorized_budget_usd=LIMIT_NANO/1e9,ledger_verified=ledger_verified,
                     accounted_usd_scope='original_trial' if ledger_verified else 'available_local_fragment',
                     accounted_usd=used/1e9,unreconciled_usd=pending/1e9,
                     remaining_usd=max(0,limit-used)/1e9 if ledger_verified else None,requests=requests)
+        if extension_authorized:
+            result.update(original_ends_at=end,extension_id=EXTENSION_ID,
+                          extension_authorized_at=EXTENSION_AUTHORIZED_AT,
+                          extension_applied=identity_ok and ledger_verified)
         if checkpoint:
             result.update(accounted_usd_scope='provider_checkpoint_plus_local',
                           history_complete=False,budget_evidence='matched_provider_exports',
@@ -295,7 +317,11 @@ class TrialBudget:
                 self.db.execute('UPDATE trial_calls SET charged_nano=?,input_tokens=?,cached_tokens=?,output_tokens=? '
                                 'WHERE id=?', (cost,inp,cached,out,charge_id))
             else:
-                self.db.execute('UPDATE trial_runs SET stop_reason=COALESCE(stop_reason,?) '
+                # A late usage failure must not hide behind an elapsed timer:
+                # a later explicitly authorized extension can lift only time.
+                self.db.execute('UPDATE trial_runs SET stop_reason=CASE '
+                                "WHEN stop_reason IS NULL OR stop_reason='duration_elapsed' "
+                                'THEN ? ELSE stop_reason END '
                                 'WHERE trial_id=? AND account=?',
                                 ('usage_unverified',TRIAL_ID,self.account))
             self.db.commit()
