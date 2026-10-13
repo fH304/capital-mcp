@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .analysis import AnalysisClient, AnalysisError, validate_context, validate_recommendation
 from .capital import CapitalDemo, CapitalError, identifier
-from .coordinator import DemoCoordinator
+from .coordinator import DemoCoordinator, EntryPreflightBlocked
 from .daily import DailyRisk, AdaptiveDailyRisk
 from .fx import ROUTES
 from .marketdata import MarketCollector
@@ -24,6 +24,7 @@ from .schedule import MarketSchedule
 from .spreadstudy import SpreadStudy
 from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
 from .trial import is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
+from .evidence import NEWS_REQUIRED, TECHNICAL_OR_NEWS, technical_evidence
 
 
 def log(event, **fields):
@@ -92,6 +93,13 @@ class Config:
             raise ValueError('Invalid per-market analysis interval')
         if self.trial:
             self.analysis_interval=0
+        default_evidence=TECHNICAL_OR_NEWS if self.trial and is_approved_account(self.account) else NEWS_REQUIRED
+        self.entry_evidence=env.get('SMART_ENTRY_EVIDENCE',default_evidence)
+        if self.entry_evidence not in {NEWS_REQUIRED,TECHNICAL_OR_NEWS}:
+            raise ValueError('Invalid entry evidence policy')
+        self.technical_entries=self.entry_evidence==TECHNICAL_OR_NEWS
+        if self.technical_entries and not (self.trial and is_approved_account(self.account)):
+            raise ValueError('Technical entry policy is restricted to the approved demo trial')
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
         if not isinstance(self.symbols,dict) or not 1<=len(self.symbols)<=32:
@@ -124,6 +132,7 @@ class Worker:
         self.feed_lock=threading.Lock()
         self.order_lock=threading.RLock()
         self.articles={}
+        self.news_checks={}
         # Scheduling is shared across clients but slow I/O does not hold the lock.
         self.rate_lock=threading.Lock()
         self.next_request=self.next_login=0
@@ -161,6 +170,29 @@ class Worker:
         if not hasattr(self.local,'spread_study'):
             self.local.spread_study=SpreadStudy(str(self.config.directory/'spread.sqlite'),self.config.account)
         return self.local.spread_study
+
+    def require_entry(self):
+        now=self.clock()
+        if self.config.trial:
+            self.trial_budget().require_entry(now)
+        if not self.gate.may_enter(now):
+            raise EntryPreflightBlocked('feed_or_daily_gate_changed_before_submission')
+
+    def evidence_context(self,context,articles):
+        with self.feed_lock:
+            feed=dict(self.news_checks.get(context['epic'],{}))
+        return dict(context,articles=articles,news_feed_healthy=feed.get('healthy',False),
+                    news_checked_at=feed.get('checked_at'),entry_evidence_policy=self.config.entry_evidence)
+
+    def decision_fields(self,context,scoring):
+        checked=technical_evidence(context,self.clock()) if self.config.technical_entries else None
+        reason=('missing_news' if not context['articles'] and not self.config.technical_entries else
+                checked['reason'] if not context['articles'] and checked and not checked['ready'] else
+                scoring['reason'] if scoring['score']<=0 else 'analyst_wait')
+        return dict(decision_time=self.clock(),news_articles=len(context['articles']),
+                    news_feed_healthy=context.get('news_feed_healthy',False),
+                    technical_score=scoring['score'],technical_reason=scoring['reason'],
+                    entry_evidence_policy=self.config.entry_evidence,wait_reason=reason)
 
     def institutional_study(self):
         if not hasattr(self.local,'institutional_study'):
@@ -222,7 +254,7 @@ class Worker:
             preflight()
         if (self.config.trial and request.get_method()=='POST'
                 and request.full_url.endswith('/positions')):
-            self.trial_budget().require_entry(self.clock())
+            self.require_entry()
         return build_opener(NoRedirect()).open(request,timeout=timeout)
 
     def resources(self):
@@ -231,13 +263,14 @@ class Worker:
             self.local.daily=(AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols,
                                                selected_market_only=c.broad)
                               if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
-            self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account,c.max_positions)
+            self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account,c.max_positions,
+                                              allow_technical_entry=c.technical_entries)
         if not getattr(self.local,'broker',None):
             c=self.config
             broker=(self.broker_factory(self.local.daily) if self.broker_factory else
                 CapitalDemo(key=c.key,user=c.user,password=c.password,account_id=c.account,
                             daily_controller=self.local.daily,armed=c.armed,opener=self.paced_open,
-                            entry_guard=(lambda:self.trial_budget().require_entry(self.clock())) if c.trial else None))
+                            entry_guard=self.require_entry))
             broker.configure_entries(c.max_positions,self.local.journal.owned)
             broker.login()
             self.local.broker=broker
@@ -287,7 +320,8 @@ class Worker:
         self.emit('smart_heartbeat',mode=self.config.mode,equity=state['equity'],
                   open_positions=len(state['positions']),daily_stopped=state['daily']['stopped'],
                   analysis_mode=self.config.analysis_mode,markets=len(self.config.symbols),
-                  daily_analysis_cap=self.config.calls)
+                  daily_analysis_cap=self.config.calls,armed=self.config.armed,
+                  entry_evidence_policy=self.config.entry_evidence)
         if self.config.trial:
             self.emit('trial_status',**self.trial_budget().status(self.clock()))
             self.trial_active()
@@ -313,6 +347,7 @@ class Worker:
             self.local.news=(self.news_factory() if self.news_factory else
                 NewsClient(self.config.news_key,str(self.config.directory/'news.sqlite')))
         general=self.local.news.fetch('__GENERAL__') if self.config.broad else None
+        healthy=False
         for epic,symbol in self.config.symbols.items():
             feed=general if general is not None else self.local.news.fetch(symbol)
             # A symbol-specific request alone is insufficient if article tags disagree.
@@ -321,10 +356,14 @@ class Worker:
                        0<=self.clock()-timestamp(a['published_utc'])<=21600])
             with self.feed_lock:
                 self.articles[epic]=articles
+                verified=feed.get('healthy',feed['status'] in {'fetched','cached'}) is True
+                self.news_checks[epic]=dict(healthy=verified,checked_at=feed.get('checked_at',self.clock()))
+                healthy=healthy or verified
             self.emit('news_ready',epic=epic,status=feed['status'],articles=len(articles),
-                      feed_mode='general' if self.config.broad else 'symbol')
+                      feed_mode='general' if self.config.broad else 'symbol',feed_healthy=verified,
+                      entry_evidence_policy=self.config.entry_evidence)
         with self.feed_lock:
-            return any(self.articles.values())
+            return healthy if self.config.technical_entries else any(self.articles.values())
 
     def opportunities(self):
         if not self.trial_active():
@@ -425,13 +464,14 @@ class Worker:
                 articles=relevant_articles(epic,self.articles.get(epic,[]),self.clock())
         articles=[dict(a,title=a.get('title','')[:500],content=a.get('content','')[:1000])
                   for a in sorted(articles,key=lambda a:timestamp(a['published_utc']),reverse=True)[:5]]
-        context=dict(context,articles=articles,purpose='market_monitoring')
+        context=dict(self.evidence_context(context,articles),purpose='market_monitoring')
         validate_context(context,self.clock(),allow_missing_news=True)
         if not hasattr(self.local,'ai'):
             c=self.config
             self.local.ai=(self.ai_factory() if self.ai_factory else
                            AnalysisClient(c.ai_key,c.model,str(c.directory/'analysis.sqlite'),
                                           daily_calls=None,allow_missing_news=True,
+                                          allow_technical_entry=c.technical_entries,
                                           trial=self.trial_budget() if c.trial else None))
         if not hasattr(self.local,'schedule'):
             self.local.schedule=MarketSchedule(str(self.config.directory/'scans.sqlite'),
@@ -446,7 +486,8 @@ class Worker:
                   news_articles=len(articles),execution_supported=context.get('execution_supported',True))
         try:
             result=self.local.ai.analyze(context)
-            validate_recommendation(result,context,self.clock(),allow_missing_news=True)
+            validate_recommendation(result,context,self.clock(),allow_missing_news=True,
+                                    allow_technical_entry=self.config.technical_entries)
         except TrialStopped:
             self.local.schedule.finish(epic,candle,'failed')
             self.trial_active()
@@ -461,18 +502,19 @@ class Worker:
             self.emit('analysis_failed',**fields)
             return True
         self.local.schedule.finish(epic,candle,'done')
+        diagnostics=self.decision_fields(context,scoring)
         self.emit('analysis_ready',epic=epic,analysis_mode=self.config.analysis_mode,action=result['action'],
-                  assessment=result['assessment'],reason=result['reason'],news_articles=len(articles))
+                  assessment=result['assessment'],reason=result['reason'],**diagnostics)
         if result['action']=='WAIT':
-            self.emit('entry_wait',epic=epic)
+            self.emit('entry_wait',epic=epic,reason=diagnostics['wait_reason'],rationale=result['reason'])
             return True
         if context.get('execution_supported',True) and articles:
             self.study_candidate(context,scoring,result)
-        if not context.get('execution_supported',True) or not articles or scoring['score']<=0:
+        if not context.get('execution_supported',True) or (not articles and not self.config.technical_entries) or scoring['score']<=0:
             blocked_filters=[]
             if not context.get('execution_supported',True):
                 blocked_filters.append('execution_unsupported')
-            if not articles:
+            if not articles and not self.config.technical_entries:
                 blocked_filters.append('missing_news')
             if scoring['score']<=0:
                 blocked_filters.append('technical_filter')
@@ -491,6 +533,7 @@ class Worker:
     def evaluate(self,epic,context,articles,state,reconciled,broker,journal,recommendation=None):
         if not self.trial_active():
             return True
+        context=self.evidence_context(context,articles)
         if self.config.risk_mode=='auto':
             self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
             state['daily']=self.local.daily(state['equity'],self.clock())
@@ -500,16 +543,21 @@ class Worker:
                       market_data_ready=state['daily']['ready'])
         self.emit('market_data_ready',epic=epic,closed_bars={k:len(v['candles']) for k,v in context['timeframes'].items()})
         capacity=self.capacity_reason(epic,state,reconciled)
-        if not articles or capacity or not state['daily'].get('ready',True):
+        if (not articles and not self.config.technical_entries) or capacity or not state['daily'].get('ready',True):
             self.emit('entry_blocked',epic=epic,reason=capacity or 'news_or_daily_gate')
             return True  # observations usable; no entry performed
+        if not articles and self.config.technical_entries:
+            checked=technical_evidence(context,self.clock())
+            if not checked['ready']:
+                self.emit('entry_blocked',epic=epic,reason=checked['reason'])
+                return True
         self.gate.success('opportunities',self.clock())
         if not self.gate.may_enter(self.clock()):
             self.emit('entry_blocked',epic=epic,reason='feed_or_daily_gate')
             return True
         context['articles']=articles
         context['desk_brief']=market_brief(context,self.clock())
-        validate_context(context,self.clock())
+        validate_context(context,self.clock(),allow_missing_news=self.config.technical_entries)
         if recommendation is not None:
             if not self.trial_active():
                 return True
@@ -521,7 +569,8 @@ class Worker:
         if not hasattr(self.local,'ai'):
             c=self.config
             self.local.ai=(self.ai_factory() if self.ai_factory else
-                          AnalysisClient(c.ai_key,c.model,str(c.directory/'analysis.sqlite'),daily_calls=c.calls))
+                          AnalysisClient(c.ai_key,c.model,str(c.directory/'analysis.sqlite'),daily_calls=c.calls,
+                                          allow_technical_entry=c.technical_entries))
             self.local.scans=sqlite3.connect(c.directory/'scans.sqlite',timeout=10)
             self.local.scans.execute('PRAGMA synchronous=FULL')
             self.local.scans.execute('CREATE TABLE IF NOT EXISTS scans(account TEXT,epic TEXT,candle REAL,PRIMARY KEY(account,epic,candle))')
@@ -546,7 +595,7 @@ class Worker:
         if not inserted:
             return True
         result=self.local.ai.analyze(context)
-        validate_context(context,self.clock())
+        validate_context(context,self.clock(),allow_missing_news=self.config.technical_entries)
         self.emit('analysis_ready',epic=epic,action=result['action'],assessment=result['assessment'],reason=result['reason'])
         if result['action'] in {'BUY','SELL'}:
             self.study_candidate(context,rank(context),result)
@@ -581,7 +630,8 @@ def main():
         log('smart_worker_started',mode=config.mode,account_id=config.account,
             market_mode='broad' if config.broad else 'single',markets=len(config.symbols),
             analysis_mode=config.analysis_mode,daily_analysis_cap=config.calls,
-            analysis_interval_seconds=config.analysis_interval,
+            analysis_interval_seconds=config.analysis_interval,armed=config.armed,
+            entry_evidence_policy=config.entry_evidence,
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
             spread_study='observe_only_historical_threshold_comparison',spread_policy=SPREAD_POLICY,
             pair_entries=config.max_positions,

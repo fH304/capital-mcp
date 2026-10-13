@@ -13,7 +13,7 @@ from pathlib import Path
 from .analysis import validate_recommendation
 from .policy import assessed_size
 from .exposure import entry_limits, ExposureError
-from .trial import TrialEntryBlocked
+from .trial import TrialEntryBlocked, is_approved_account
 
 
 class CoordinationError(RuntimeError):
@@ -33,7 +33,8 @@ def fresh(value, now, age, label):
         raise CoordinationError('Stale or invalid '+label)
 
 
-def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positions=1):
+def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positions=1,
+               allow_technical_entry=False):
     """Revalidate analysis with current executable quotes and broker metadata.
 
     snapshot is trusted adapter data, never part of the model recommendation.
@@ -42,6 +43,8 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
     """
     if snapshot.get('environment') != 'demo' or not snapshot.get('account_id'):
         raise CoordinationError('Only an identified demo account is supported')
+    if allow_technical_entry and not is_approved_account(str(snapshot['account_id'])):
+        raise CoordinationError('Technical entry policy is not authorized for this account')
     if snapshot.get('epic') != context.get('epic'):
         raise CoordinationError('Market mismatch')
     for key in ('account_time', 'positions_time', 'orders_time', 'contract_time'):
@@ -57,7 +60,8 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
     # Replace old analysis prices after the model call; recheck reward/risk.
     current = dict(context, bid=snapshot.get('bid'), ask=snapshot.get('ask'),
                    quote_time=snapshot.get('quote_time'))
-    result = validate_recommendation(recommendation, current, now)
+    result = validate_recommendation(recommendation, current, now,
+                                    allow_technical_entry=allow_technical_entry)
     if result['action'] == 'WAIT':
         return None
     if result['action'] not in ('BUY', 'SELL'):
@@ -93,6 +97,7 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
             'stop_level': result['stop_level'], 'target_level': result['target_level'],
             'planned_risk': sizing['planned_risk'], 'required_margin': sizing['required_margin'],
             'reason': result['reason'], 'article_ids': list(result['article_ids'])}
+    plan['evidence_basis'] = 'news_articles' if context['articles'] else 'validated_closed_candles'
     for key in ('account_currency','quote_currency','fx_epic','fx_rate','quote_to_account',
                 'conversion_time','conversion_fee_buffer'):
         if key in snapshot:
@@ -115,11 +120,14 @@ class DemoCoordinator:
     the actual position and return its account, epic, direction, size, stop and
     target in addition to deal_id and status='confirmed'. No automatic retry.
     """
-    def __init__(self, path, account_id, max_positions=1):
+    def __init__(self, path, account_id, max_positions=1, *, allow_technical_entry=False):
         if type(max_positions) is not int or max_positions not in (1, 2):
             raise CoordinationError('Invalid position policy')
         self.max_positions = max_positions
         self.account_id = str(account_id)
+        self.allow_technical_entry = allow_technical_entry is True
+        if self.allow_technical_entry and not is_approved_account(self.account_id):
+            raise CoordinationError('Technical entry policy is not authorized for this account')
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=10)
         self.db.execute('PRAGMA synchronous=FULL')
@@ -153,7 +161,8 @@ class DemoCoordinator:
             # confirmed leg closed using an older in-flight entry snapshot.
         try:
             plan = plan_entry(recommendation, context, snapshot, now,
-                              owned=self.owned(), max_positions=self.max_positions)
+                              owned=self.owned(), max_positions=self.max_positions,
+                              allow_technical_entry=self.allow_technical_entry)
         except PairEntryBlocked as error:
             return dict(status='blocked',reason=str(error))
         if plan is None:
@@ -175,7 +184,8 @@ class DemoCoordinator:
                 # Another client must not use a pre-reservation snapshot after
                 # an order has been confirmed on the shared journal.
                 plan = plan_entry(recommendation, context, snapshot, now,
-                                  owned=self.owned(), max_positions=2)
+                                  owned=self.owned(), max_positions=2,
+                                  allow_technical_entry=self.allow_technical_entry)
             self.db.execute('INSERT INTO smart_entries (signal,account,status,plan) VALUES (?,?,?,?)',
                             (signal, self.account_id, 'pending', json.dumps(plan, allow_nan=False)))
             self.db.commit()

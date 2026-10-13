@@ -1,6 +1,7 @@
 """EODHD news ingestion. Secret-safe errors, persistent budget, no trading calls."""
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import time
@@ -97,7 +98,12 @@ class NewsClient:
             if status:
                 self.db.commit()
                 data = normalize(json.loads(cached[2]), now) if cached and cached[2] else {'articles': [], 'rejected': []}
-                return {'status': status, 'symbol': symbol, **data}
+                stamp=cached[1] if cached else None
+                healthy=(status=='cached' and type(stamp) in (int,float) and math.isfinite(stamp)
+                         and stamp>=cached[0] and 0<=now-stamp<=21600)
+                healthy=healthy and (bool(data['articles']) or not any(
+                    r in {'malformed_article','future_publication'} for r in data['rejected']))
+                return dict(status=status,symbol=symbol,healthy=healthy,checked_at=stamp,**data)
             self.db.execute('INSERT INTO budget VALUES (?,?) ON CONFLICT(day) DO UPDATE SET used=used+excluded.used', (day,self.COST))
             self.db.execute('INSERT INTO feed(symbol,attempted) VALUES (?,?) ON CONFLICT(symbol) DO UPDATE SET attempted=excluded.attempted', (symbol, now))
             self.db.commit()
@@ -125,7 +131,9 @@ class NewsClient:
             raise NewsError('EODHD response could not be decoded') from None
         with self.db:
             self.db.execute('UPDATE feed SET fetched=?,payload=? WHERE symbol=?', (now, json.dumps(rows), symbol))
-        return {'status': 'fetched', 'symbol': symbol, **result}
+        healthy=bool(result['articles']) or not any(r in {'malformed_article','future_publication'}
+                                                  for r in result['rejected'])
+        return dict(status='fetched',symbol=symbol,healthy=healthy,checked_at=now,**result)
 
 
 def main():

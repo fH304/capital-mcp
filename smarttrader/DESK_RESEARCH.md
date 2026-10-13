@@ -21,10 +21,12 @@ that exceeds the risk/margin allowance. Fresh broker prices are checked again
 before orders and at confirmation. Future slippage and financing are unknown;
 2:1 geometry does not prove positive net expectancy.
 
-Existing news, direction, ownership, staged-entry, daily-loss and original trial
-guards still apply. This change does not renew the trial, increase its spending
-limit or change leverage preferences. Historical spread thresholds remain in the
-read-only sensitivity report, labelled as research references.
+Direction, ownership, staged-entry, daily-loss and trial guards still apply.
+The approved demo now also permits validated technical entries with a healthy
+but empty news feed; see DEMO_ENTRY_EVIDENCE.md. Failed news feeds still block
+entry. The explicit time extension is documented in TRIAL_EXTENSION.md and
+preserves the original total spending limit. Leverage preferences are unchanged.
+Historical spread thresholds remain read-only research references.
 
 ## New entry templates are shadow-only
 
