@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from .test_universe import trending
 from .test_analysis import NOW, context, recommendation
-from .strategy import trend_setup, range_setup, accepts_levels
+from .strategy import trend_setup, range_setup, active_setup, accepts_levels
 from .strategy_study import StrategyStudy, metrics
 from .analysis import validate_recommendation, AnalysisError
 
@@ -76,6 +76,29 @@ class StructureTests(unittest.TestCase):
         s=range_setup(c,NOW)
         self.assertTrue(s['ready'],s);self.assertFalse(s['execution_authorized'])
         self.assertFalse(trend_setup(c,NOW)['ready'])
+
+    def test_bounded_range_entry_uses_same_stressed_risk_and_fresh_feed(self):
+        from .evidence import technical_evidence
+        c=setup_context()
+        for f in c['timeframes'].values():
+            for b in f['candles']: b.update(o=1.04,c=1.04,h=1.05,l=1.03)
+        c['timeframes']['MINUTE_15']['candles'][-1].update(o=1.031,c=1.032,h=1.033,l=1.029)
+        c.update(bid=1.032,ask=1.0321)
+        setup=active_setup(c,NOW)
+        self.assertEqual(setup['strategy'],'range_rejection_v1')
+        self.assertTrue(setup['execution_authorized'])
+        self.assertTrue(technical_evidence(c,NOW)['ready'])
+        recommendation=dict(action='BUY',assessment='acceptable',stop_level=setup['stop_level'],
+                            target_level=setup['target_level'],reason='Observed edge rejection',article_ids=[])
+        validate_recommendation(recommendation,c,NOW,allow_technical_entry=True)
+        with self.assertRaises(AnalysisError):
+            validate_recommendation(dict(recommendation,target_level=1.06),c,NOW,allow_technical_entry=True)
+        with self.assertRaises(AnalysisError):
+            validate_recommendation(dict(recommendation,stop_level=1.03),c,NOW,allow_technical_entry=True)
+        c['news_feed_healthy']=False
+        self.assertFalse(technical_evidence(c,NOW)['ready'])
+        with self.assertRaises(AnalysisError):
+            validate_recommendation(recommendation,c,NOW,allow_technical_entry=True)
 
     def test_supported_target_cannot_be_stretched_to_create_two_r(self):
         c=setup_context()

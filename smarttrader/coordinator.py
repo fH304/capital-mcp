@@ -71,8 +71,8 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
     distance = bid-result['stop_level'] if result['action'] == 'BUY' else result['stop_level']-ask
     setup=None
     if allow_technical_entry:
-        from .strategy import trend_setup
-        setup=trend_setup(current,now)
+        from .strategy import active_setup
+        setup=active_setup(current,now)
         distance+=setup['slippage_stress_distance']
     names = ('equity', 'free_margin', 'point_value', 'quote_to_account',
              'margin_per_unit', 'min_size', 'size_step', 'max_size',

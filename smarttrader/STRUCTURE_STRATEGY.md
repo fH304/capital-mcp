@@ -1,7 +1,8 @@
 # Closed-candle structure strategy
 
-The approved demo's technical_or_news policy now requires structure_trend_v1 for
-all BUY/SELL recommendations, including those supported by news. This tightens
+The approved demo's technical_or_news policy requires an independent closed-candle
+structure setup for all BUY/SELL recommendations, including those supported by news.
+This tightens
 entry requirements; it does not promise a minimum number of trades or a deadline.
 The analyst may veto a setup. It cannot create eligibility or override levels.
 
@@ -33,7 +34,11 @@ repair an expired key or provider entitlement without runtime evidence.
 
 Separate range_rejection_v1 observes rejections near the prior 20-bar support or
 resistance when H4/H1 are neutral, with a buffered structure stop and opposite-edge
-target. It cannot place orders, bypass the trend gate or be promoted by a flag.
+target. An approved demo can now select this as an additional entry route only if
+the observed target is within 3 M15 ATR of the executable entry, the stressed 2R
+rule holds, and the same feed, trial, broker and combined risk gates pass. The
+trend route remains available and takes priority. This is an unvalidated demo
+hypothesis; neither frequency nor profit is guaranteed.
 Both hypotheses record prospective next-full-M15-open paper outcomes in
 strategy-study.sqlite. Parameters are versioned; historical desk tables remain
 unchanged. Paper candidates do not overlap within a market/version's fixed
@@ -51,5 +56,5 @@ backtest of an optimized model. Both segments must be reviewed; the later segmen
 must not be used to tune this version. A 100-candidate reporting floor is not
 statistical proof. Correlated market candidates, intratrade/account drawdowns,
 financing and fees are not simulated. No profitable result is claimed until
-independent data and actual costs are available. A second strategy must undergo a
-separate review and version before execution; no automatic promotion exists.
+independent data and actual costs are available. This paper study does not
+authorize execution or automatically change the demo entry rules.

@@ -104,3 +104,22 @@ def range_setup(context, now):
     return dict(base,ready=True,direction='BUY' if buy else 'SELL',reason='range_edge_rejection',
                 stop_level=stop,target_level=target,entry_price=entry,atr=atr,
                 slippage_stress_distance=.1*atr)
+
+
+def active_setup(context, now):
+    """Preserve the trend route; allow a bounded range edge on demo accounts."""
+    trend = trend_setup(context, now)
+    if trend['ready']:
+        return trend
+    candidate = range_setup(context, now)
+    if not candidate['ready']:
+        return trend if trend['reason'] != 'higher_timeframes_range_or_mixed' else candidate
+    # Small targets are only useful if the actual executable spread and the
+    # stressed 2R requirement fit inside a nearby observed range boundary.
+    if abs(candidate['target_level']-candidate['entry_price']) > 3*candidate['atr']:
+        return dict(candidate, ready=False, reason='range_target_not_nearby')
+    sign = 1 if candidate['direction'] == 'BUY' else -1
+    return dict(candidate, execution_authorized=True,
+                invalidation_level=candidate['stop_level'], target_ceiling=candidate['target_level'],
+                target_basis='observed_range_opposite_edge',
+                reference_level=candidate['target_level'])

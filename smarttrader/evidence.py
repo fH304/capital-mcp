@@ -7,7 +7,7 @@ import math
 
 from .institutional import market_brief
 from .universe import rank
-from .strategy import trend_setup
+from .strategy import active_setup
 
 NEWS_REQUIRED = 'news_required'
 TECHNICAL_OR_NEWS = 'technical_or_news'
@@ -25,11 +25,15 @@ def technical_evidence(context, now):
         return dict(result, reason='observation_only_contract')
     brief = market_brief(context, now)
     scoring = rank(context)
-    if scoring['score'] <= 0:
+    setup=active_setup(context,now)
+    if scoring['score'] <= 0 and not setup['ready']:
         return dict(result, reason=scoring['reason'])
     # Recent gaps are rejected by validate_frames. Older market closures remain
     # visible in the brief; they do not alone invalidate fresh closed candles.
     regime = brief['regime']
+    if setup['ready'] and setup['strategy'] == 'range_rejection_v1':
+        return dict(result,**{k:v for k,v in setup.items() if k not in result},
+                    ready=True,direction=setup['direction'],reason=setup['reason'])
     if regime not in ('trend_up', 'trend_down'):
         return dict(result, reason='technical_regime_not_trending')
     bias = 'up' if regime == 'trend_up' else 'down'
@@ -38,6 +42,5 @@ def technical_evidence(context, now):
     shock = brief['last_bar_range_atr']
     if shock is None or shock > 3:
         return dict(result, reason='technical_volatility_shock')
-    setup=trend_setup(context,now)
     return dict(result,**{k:v for k,v in setup.items() if k not in result},
                 ready=setup['ready'],direction=setup['direction'],reason=setup['reason'])

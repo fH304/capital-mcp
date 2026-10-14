@@ -22,7 +22,7 @@ from .news import NewsClient, timestamp
 from .universe import MARKETS, SPREAD_POLICY, relevant_articles, rank
 from .schedule import MarketSchedule
 from .spreadstudy import SpreadStudy
-from .strategy import trend_setup
+from .strategy import active_setup
 from .strategy_study import StrategyStudy
 from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
 from .trial import is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
@@ -190,13 +190,13 @@ class Worker:
         checked=technical_evidence(context,self.clock()) if self.config.technical_entries else None
         reason=('missing_news' if not context['articles'] and not self.config.technical_entries else
                 checked['reason'] if not context['articles'] and checked and not checked['ready'] else
-                trend_setup(context,self.clock())['reason'] if self.config.technical_entries and not trend_setup(context,self.clock())['ready'] else
+                active_setup(context,self.clock())['reason'] if self.config.technical_entries and not active_setup(context,self.clock())['ready'] else
                 scoring['reason'] if scoring['score']<=0 else 'analyst_wait')
         return dict(decision_time=self.clock(),news_articles=len(context['articles']),
                     news_feed_healthy=context.get('news_feed_healthy',False),
                     technical_score=scoring['score'],technical_reason=scoring['reason'],
                     entry_evidence_policy=self.config.entry_evidence,wait_reason=reason,
-                    structure_setup=trend_setup(context,self.clock()) if self.config.technical_entries else None)
+                    structure_setup=active_setup(context,self.clock()) if self.config.technical_entries else None)
 
     def institutional_study(self):
         if not hasattr(self.local,'institutional_study'):
@@ -523,13 +523,15 @@ class Worker:
             return True
         if context.get('execution_supported',True) and articles:
             self.study_candidate(context,scoring,result)
-        if not context.get('execution_supported',True) or (not articles and not self.config.technical_entries) or scoring['score']<=0:
+        range_ready=(self.config.technical_entries and active_setup(context,self.clock())['ready']
+                     and active_setup(context,self.clock())['strategy']=='range_rejection_v1')
+        if not context.get('execution_supported',True) or (not articles and not self.config.technical_entries) or (scoring['score']<=0 and not range_ready):
             blocked_filters=[]
             if not context.get('execution_supported',True):
                 blocked_filters.append('execution_unsupported')
             if not articles and not self.config.technical_entries:
                 blocked_filters.append('missing_news')
-            if scoring['score']<=0:
+            if scoring['score']<=0 and not range_ready:
                 blocked_filters.append('technical_filter')
             self.emit('entry_blocked',epic=epic,reason='execution_news_or_technical_filter',
                       blocked_filters=blocked_filters,analysis_action=result['action'],

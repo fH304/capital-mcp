@@ -72,7 +72,7 @@ return WAIT and state the missing news. Do not invent evidence.
 TECHNICAL_INSTRUCTIONS = """Entry policy: technical_or_news, for the approved demo.
 If articles are supplied, actions still require cited supplied article IDs.
 All BUY/SELL entries, including cited-news entries, require the independently
-computed structure_setup.ready, matching direction, a stop beyond invalidation,
+computed structure_setup.ready (trend or bounded range edge), matching direction, a stop beyond invalidation,
 and a target no farther than target_ceiling. Reward after the supplied slippage
 stress distance must be at least twice risk plus that distance. This stress is
 an assumption, not a measured cost. Never bypass the setup with news.
@@ -80,7 +80,7 @@ When articles are empty, BUY/SELL is permitted only if the independently compute
 technical_evidence.ready is true and action matches technical_evidence.direction.
 Use actual closed-candle structure for the invalidation stop and supported target;
 2:1 must hold at the current executable entry side. Missing headlines alone do not
-veto this case. A failed/unverified news feed, weak/mixed/range evidence or a
+veto this case. A failed/unverified news feed, weak/mixed evidence or a
 volatility shock still requires WAIT. If technical_evidence.ready is false and
 articles are empty, return WAIT with its concrete reason. Do not treat an empty
 news response as proof that no economic event is approaching. Do not claim a
@@ -152,8 +152,8 @@ def validate_recommendation(result, context, now, *, allow_missing_news=False,
         raise AnalysisError('Cannot close an unowned or absent position')
     if action in ('BUY', 'SELL'):
         if allow_technical_entry:
-            from .strategy import trend_setup, accepts_levels
-            setup=trend_setup(context,now)
+            from .strategy import active_setup, accepts_levels
+            setup=active_setup(context,now)
             if not accepts_levels(setup,action,result['stop_level'],result['target_level'],
                                   context['bid'],context['ask']):
                 raise AnalysisError('Entry lacks valid structure, invalidation or cost-stressed target')
@@ -204,8 +204,8 @@ class AnalysisClient:
                        if self.allow_technical_entry else NEWS_REQUIRED))
         if self.allow_technical_entry:
             context['technical_evidence'] = technical_evidence(context, now)
-            from .strategy import trend_setup
-            context['structure_setup'] = trend_setup(context,now)
+            from .strategy import active_setup
+            context['structure_setup'] = active_setup(context,now)
         else:
             context.pop('technical_evidence', None)
             context.pop('structure_setup',None)
