@@ -69,6 +69,11 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
     bid, ask = current['bid'], current['ask']
     # sizing adds spread itself: measure from the executable closing side.
     distance = bid-result['stop_level'] if result['action'] == 'BUY' else result['stop_level']-ask
+    setup=None
+    if allow_technical_entry:
+        from .strategy import trend_setup
+        setup=trend_setup(current,now)
+        distance+=setup['slippage_stress_distance']
     names = ('equity', 'free_margin', 'point_value', 'quote_to_account',
              'margin_per_unit', 'min_size', 'size_step', 'max_size',
              'open_risk', 'daily_remaining_risk')
@@ -97,6 +102,12 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
             'stop_level': result['stop_level'], 'target_level': result['target_level'],
             'planned_risk': sizing['planned_risk'], 'required_margin': sizing['required_margin'],
             'reason': result['reason'], 'article_ids': list(result['article_ids'])}
+    if setup:
+        plan['slippage_stress_distance']=setup['slippage_stress_distance']
+        plan['strategy']=setup['strategy']
+        plan['setup_reason']=setup['reason']
+        plan['invalidation_level']=setup['invalidation_level']
+        plan['target_basis']=setup['target_basis']
     plan['evidence_basis'] = 'news_articles' if context['articles'] else 'validated_closed_candles'
     for key in ('account_currency','quote_currency','fx_epic','fx_rate','quote_to_account',
                 'conversion_time','conversion_fee_buffer'):

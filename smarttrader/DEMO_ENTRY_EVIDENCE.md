@@ -27,3 +27,7 @@ isolated and do not supply these order recommendations.
 `entry_evidence_policy=technical_or_news` for activated conditional entries.
 `entry_confirmed` proves an actual broker confirmation. WAIT is still a valid
 decision; `entry_wait` now records a concrete reason in the persistent report.
+
+All approved-demo BUY/SELL entries now additionally require the independent
+closed-candle setup and structure protection described in STRUCTURE_STRATEGY.md.
+News cannot bypass this requirement. The separate range study is observational.

@@ -12,12 +12,13 @@ from .news import NewsClient, NewsError
 from .runner import Config
 from .test_analysis import NOW, recommendation
 from .test_universe import trending
+from .test_strategy import setup_context
 from .test_trial import Response, response
 from . import test_trial as trial_fixture
 
 
 def observations():
-    return dict(trending(),articles=[],news_feed_healthy=True,news_checked_at=NOW)
+    return setup_context()
 
 
 def signal():
@@ -38,7 +39,7 @@ class EvidenceTests(unittest.TestCase):
             for b in f['candles']:
                 b.update(o=2-b['o'],c=2-b['c'],h=2-b['l'],l=2-b['h'])
         ctx.update(bid=2-ctx['ask'],ask=2-ctx['bid'])
-        result=dict(signal(),action='SELL',stop_level=1.,target_level=.85)
+        result=dict(signal(),action='SELL',stop_level=.97,target_level=.93)
         self.assertEqual(technical_evidence(ctx,NOW)['direction'],'SELL')
         self.assertEqual(validate_recommendation(result,ctx,NOW,allow_technical_entry=True)['action'],'SELL')
 
@@ -207,6 +208,16 @@ class ActivationFlowTests(unittest.TestCase):
         self.run_market(worker)
         self.assertEqual(self.orders(),[])
         self.assertEqual(len(self.fixture.ai_calls),1)
+
+    def test_news_http_diagnostic_is_safe_and_does_not_send(self):
+        worker=self.worker()
+        def fail(symbol): raise NewsError('EODHD HTTP status 401')
+        worker.local.news.fetch=fail
+        with self.assertRaises(NewsError): worker.job('news')()
+        event=next(fields for name,fields in self.fixture.events if name=='news_failed')
+        self.assertEqual(event['reason'],'news_http_error')
+        self.assertEqual(event['http_status'],401)
+        self.assertEqual(self.orders(),[])
 
     def test_other_accounts_cannot_select_new_policy_and_arming_still_required(self):
         env=dict(self.fixture.env,BOT_ACCOUNT_ID='other',SMART_EXCLUSIVE_ACCOUNT='other')

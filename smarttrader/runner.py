@@ -22,6 +22,8 @@ from .news import NewsClient, timestamp
 from .universe import MARKETS, SPREAD_POLICY, relevant_articles, rank
 from .schedule import MarketSchedule
 from .spreadstudy import SpreadStudy
+from .strategy import trend_setup
+from .strategy_study import StrategyStudy
 from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
 from .trial import is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
 from .evidence import NEWS_REQUIRED, TECHNICAL_OR_NEWS, technical_evidence
@@ -188,11 +190,13 @@ class Worker:
         checked=technical_evidence(context,self.clock()) if self.config.technical_entries else None
         reason=('missing_news' if not context['articles'] and not self.config.technical_entries else
                 checked['reason'] if not context['articles'] and checked and not checked['ready'] else
+                trend_setup(context,self.clock())['reason'] if self.config.technical_entries and not trend_setup(context,self.clock())['ready'] else
                 scoring['reason'] if scoring['score']<=0 else 'analyst_wait')
         return dict(decision_time=self.clock(),news_articles=len(context['articles']),
                     news_feed_healthy=context.get('news_feed_healthy',False),
                     technical_score=scoring['score'],technical_reason=scoring['reason'],
-                    entry_evidence_policy=self.config.entry_evidence,wait_reason=reason)
+                    entry_evidence_policy=self.config.entry_evidence,wait_reason=reason,
+                    structure_setup=trend_setup(context,self.clock()) if self.config.technical_entries else None)
 
     def institutional_study(self):
         if not hasattr(self.local,'institutional_study'):
@@ -215,6 +219,14 @@ class Worker:
                 self.emit('institutional_observation',epic=context['epic'],**observed)
         except Exception as error:
             self.emit('institutional_study_failed',epic=context['epic'],error_type=type(error).__name__)
+        try:
+            if not hasattr(self.local,'strategy_study'):
+                self.local.strategy_study=StrategyStudy(str(self.config.directory/'strategy-study.sqlite'),self.config.account)
+            for observation in self.local.strategy_study.observe(context,self.clock(),bars):
+                if observation['recorded']:
+                    self.emit('setup_forward_observation',epic=context['epic'],**observation)
+        except Exception as error:
+            self.emit('setup_forward_study_failed',epic=context['epic'],error_type=type(error).__name__)
         recorded=False
         try:
             self.spread_study().observe(context,scoring,self.clock(),bars)
@@ -361,7 +373,8 @@ class Worker:
                 healthy=healthy or verified
             self.emit('news_ready',epic=epic,status=feed['status'],articles=len(articles),
                       feed_mode='general' if self.config.broad else 'symbol',feed_healthy=verified,
-                      entry_evidence_policy=self.config.entry_evidence)
+                      entry_evidence_policy=self.config.entry_evidence,checked_at=feed.get('checked_at'),
+                      rejection_counts={r:feed.get('rejected',[]).count(r) for r in set(feed.get('rejected',[]))})
         with self.feed_lock:
             return healthy if self.config.technical_entries else any(self.articles.values())
 
@@ -608,7 +621,17 @@ class Worker:
         def run():
             try:
                 return getattr(self,name)()
-            except Exception:
+            except Exception as error:
+                if name=='news':
+                    from .news import NewsError
+                    text=str(error) if isinstance(error,NewsError) else ''
+                    fields={'reason':'news_provider_failure','error_type':type(error).__name__}
+                    if text.startswith('EODHD HTTP status ') and text.rsplit(' ',1)[1].isdigit():
+                        fields.update(reason='news_http_error',http_status=int(text.rsplit(' ',1)[1]))
+                    elif text=='EODHD network request failed': fields['reason']='news_network_error'
+                    elif text=='EODHD_API_KEY is missing': fields['reason']='news_key_missing'
+                    elif isinstance(error,NewsError): fields['reason']='news_response_invalid'
+                    self.emit('news_failed',**fields)
                 # Refresh authentication only on the NEXT observation cycle;
                 # never repeat or relogin inside an order mutation sequence.
                 self.local.broker=None

@@ -16,6 +16,7 @@ from .marketdata import MarketCollector
 from .test_analysis import NOW, context, recommendation
 from .test_runner import LiveStateTransport
 from .test_universe import MARKETS, article, trending
+from .test_strategy import setup_context
 from .trial import (APPROVED_ACCOUNT, DURATION, LIMIT_NANO, MAX_CHARGE,
                     MODEL, TRIAL_ID, TrialBudget, TrialStopped, AUTHORIZED_STARTED_AT)
 
@@ -414,7 +415,7 @@ class TrialWorkerTests(unittest.TestCase):
         self.workers.append(worker)
         return worker
     def collect(self,collector,epic):
-        data=trending(epic)
+        data=setup_context(epic,entry=1.10)
         delta=self.now-NOW
         data.update(bid=1.10,ask=1.1001,quote_time=self.now,collected_at=self.now)
         for frame in data['timeframes'].values():

@@ -7,6 +7,7 @@ import math
 
 from .institutional import market_brief
 from .universe import rank
+from .strategy import trend_setup
 
 NEWS_REQUIRED = 'news_required'
 TECHNICAL_OR_NEWS = 'technical_or_news'
@@ -37,5 +38,6 @@ def technical_evidence(context, now):
     shock = brief['last_bar_range_atr']
     if shock is None or shock > 3:
         return dict(result, reason='technical_volatility_shock')
-    return dict(result, ready=True, direction='BUY' if bias == 'up' else 'SELL',
-                reason='closed_trend_evidence_ready')
+    setup=trend_setup(context,now)
+    return dict(result,**{k:v for k,v in setup.items() if k not in result},
+                ready=setup['ready'],direction=setup['direction'],reason=setup['reason'])

@@ -71,6 +71,11 @@ return WAIT and state the missing news. Do not invent evidence.
 """
 TECHNICAL_INSTRUCTIONS = """Entry policy: technical_or_news, for the approved demo.
 If articles are supplied, actions still require cited supplied article IDs.
+All BUY/SELL entries, including cited-news entries, require the independently
+computed structure_setup.ready, matching direction, a stop beyond invalidation,
+and a target no farther than target_ceiling. Reward after the supplied slippage
+stress distance must be at least twice risk plus that distance. This stress is
+an assumption, not a measured cost. Never bypass the setup with news.
 When articles are empty, BUY/SELL is permitted only if the independently computed
 technical_evidence.ready is true and action matches technical_evidence.direction.
 Use actual closed-candle structure for the invalidation stop and supported target;
@@ -146,6 +151,12 @@ def validate_recommendation(result, context, now, *, allow_missing_news=False,
     if action == 'CLOSE' and not context.get('owned_position'):
         raise AnalysisError('Cannot close an unowned or absent position')
     if action in ('BUY', 'SELL'):
+        if allow_technical_entry:
+            from .strategy import trend_setup, accepts_levels
+            setup=trend_setup(context,now)
+            if not accepts_levels(setup,action,result['stop_level'],result['target_level'],
+                                  context['bid'],context['ask']):
+                raise AnalysisError('Entry lacks valid structure, invalidation or cost-stressed target')
         bid, ask = context['bid'], context['ask']
         stop, target = result['stop_level'], result['target_level']
         if action == 'BUY':
@@ -193,8 +204,11 @@ class AnalysisClient:
                        if self.allow_technical_entry else NEWS_REQUIRED))
         if self.allow_technical_entry:
             context['technical_evidence'] = technical_evidence(context, now)
+            from .strategy import trend_setup
+            context['structure_setup'] = trend_setup(context,now)
         else:
             context.pop('technical_evidence', None)
+            context.pop('structure_setup',None)
         data = json.dumps(context, allow_nan=False)
         if len(data.encode()) > 30000:
             raise AnalysisError('Analysis input exceeds size cap')
