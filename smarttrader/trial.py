@@ -34,6 +34,10 @@ EXTENSION_AUTHORIZED_AT = 1791818661.0
 EXTENSION_ORIGINAL_ENDS_AT = 1791743073.5271823
 EXTENDED_ENDS_AT = 1792180800.0
 LIMIT_NANO = 20 * 1_000_000_000
+# User authorized $25 TOTAL on 2026-10-15, not a fresh trial or $25 extra.
+BUDGET_INCREASE_ID = '2026-10-15-total-25usd-through-friday'
+BUDGET_INCREASE_AUTHORIZED_AT = 1792028178.0
+INCREASED_LIMIT_NANO = 25 * 1_000_000_000
 MAX_INPUT = 1_047_576
 MAX_OUTPUT = 2000
 INPUT_RATE, CACHED_RATE, OUTPUT_RATE = 400, 100, 1600  # nano USD/token
@@ -111,6 +115,9 @@ class TrialBudget:
                                 and now >= EXTENSION_AUTHORIZED_AT)
         authorized_end = (EXTENDED_ENDS_AT if extension_authorized
                           else AUTHORIZED_STARTED_AT+DURATION)
+        increase_authorized = (identity_ok and extension_authorized
+                               and now >= BUDGET_INCREASE_AUTHORIZED_AT)
+        effective_limit = INCREASED_LIMIT_NANO if increase_authorized else LIMIT_NANO
         effective_end = authorized_end if identity_ok else end
         checkpoint,recovery_error = self._recovery()
         if recovery_error:
@@ -130,6 +137,12 @@ class TrialBudget:
         local_used = used
         if checkpoint:
             used += checkpoint['budget_debit_nano']
+        # An explicit, time-bounded grant may lift only this prior budget stop.
+        # Retain the original persisted ceiling, receipt and every reservation.
+        if (increase_authorized and not recovery_error and reason == 'budget_exhausted'
+                and now+1 >= last and now < effective_end
+                and used+MAX_CHARGE <= effective_limit):
+            reason = None
         if not reason:
             if self.account != APPROVED_ACCOUNT or not is_approved_account(self.account):
                 reason = 'unauthorized_trial_account'
@@ -139,19 +152,24 @@ class TrialBudget:
                 reason = 'clock_moved_backwards'
             elif now >= effective_end:
                 reason = 'duration_elapsed'
-            elif used > limit or (reserve and used+MAX_CHARGE > limit):
+            elif used > effective_limit or (reserve and used+MAX_CHARGE > effective_limit):
                 reason = 'budget_exhausted'
         if mutate:
             self.db.execute('UPDATE trial_runs SET last_seen=?,stop_reason=? '
                             'WHERE trial_id=? AND account=?', (max(last,now),reason,TRIAL_ID,self.account))
         result = dict(trial_id=TRIAL_ID,trial_active=not bool(reason),stop_reason=reason,
-                    started_at=start,ends_at=effective_end,budget_usd=limit/1e9,
+                    started_at=start,ends_at=effective_end,budget_usd=effective_limit/1e9,
                     authorized_started_at=AUTHORIZED_STARTED_AT,
                     authorized_ends_at=authorized_end,
-                    authorized_budget_usd=LIMIT_NANO/1e9,ledger_verified=ledger_verified,
+                    authorized_budget_usd=effective_limit/1e9,ledger_verified=ledger_verified,
                     accounted_usd_scope='original_trial' if ledger_verified else 'available_local_fragment',
                     accounted_usd=used/1e9,unreconciled_usd=pending/1e9,
-                    remaining_usd=max(0,limit-used)/1e9 if ledger_verified else None,requests=requests)
+                    remaining_usd=max(0,effective_limit-used)/1e9 if ledger_verified else None,requests=requests)
+        if increase_authorized:
+            result.update(original_budget_usd=LIMIT_NANO/1e9,
+                          budget_increase_id=BUDGET_INCREASE_ID,
+                          budget_increase_authorized_at=BUDGET_INCREASE_AUTHORIZED_AT,
+                          budget_increase_applied=ledger_verified)
         if extension_authorized:
             result.update(original_ends_at=end,extension_id=EXTENSION_ID,
                           extension_authorized_at=EXTENSION_AUTHORIZED_AT,
