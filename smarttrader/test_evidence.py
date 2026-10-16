@@ -61,6 +61,15 @@ class EvidenceTests(unittest.TestCase):
             validate_recommendation(signal(),ctx,NOW,allow_technical_entry=True,
                                     allow_newsless_technical=True)
 
+    def test_rules_rejection_reports_setup_reason_instead_of_rank(self):
+        ctx=observations()
+        for frame in ('HOUR_4','HOUR'):
+            for bar in ctx['timeframes'][frame]['candles']:
+                bar.update(o=1.02,c=1.02,h=1.022,l=1.018)
+        result=technical_evidence(ctx,NOW,require_news_health=False)
+        self.assertFalse(result['ready'])
+        self.assertEqual(result['reason'],'no_range_edge_rejection')
+
     def test_mixed_range_shock_or_wrong_direction_blocks(self):
         for kind in ('range','mixed','shock','direction','unsupported'):
             ctx=observations(); rec=signal()
