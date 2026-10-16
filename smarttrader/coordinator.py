@@ -34,7 +34,7 @@ def fresh(value, now, age, label):
 
 
 def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positions=1,
-               allow_technical_entry=False):
+               allow_technical_entry=False, allow_newsless_technical=False):
     """Revalidate analysis with current executable quotes and broker metadata.
 
     snapshot is trusted adapter data, never part of the model recommendation.
@@ -61,7 +61,8 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
     current = dict(context, bid=snapshot.get('bid'), ask=snapshot.get('ask'),
                    quote_time=snapshot.get('quote_time'))
     result = validate_recommendation(recommendation, current, now,
-                                    allow_technical_entry=allow_technical_entry)
+                                    allow_technical_entry=allow_technical_entry,
+                                    allow_newsless_technical=allow_newsless_technical)
     if result['action'] == 'WAIT':
         return None
     if result['action'] not in ('BUY', 'SELL'):
@@ -131,12 +132,16 @@ class DemoCoordinator:
     the actual position and return its account, epic, direction, size, stop and
     target in addition to deal_id and status='confirmed'. No automatic retry.
     """
-    def __init__(self, path, account_id, max_positions=1, *, allow_technical_entry=False):
+    def __init__(self, path, account_id, max_positions=1, *, allow_technical_entry=False,
+                 allow_newsless_technical=False):
         if type(max_positions) is not int or max_positions not in (1, 2):
             raise CoordinationError('Invalid position policy')
         self.max_positions = max_positions
         self.account_id = str(account_id)
         self.allow_technical_entry = allow_technical_entry is True
+        self.allow_newsless_technical = allow_newsless_technical is True
+        if self.allow_newsless_technical and not self.allow_technical_entry:
+            raise CoordinationError('News-independent rules require approved technical entries')
         if self.allow_technical_entry and not is_approved_account(self.account_id):
             raise CoordinationError('Technical entry policy is not authorized for this account')
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +178,8 @@ class DemoCoordinator:
         try:
             plan = plan_entry(recommendation, context, snapshot, now,
                               owned=self.owned(), max_positions=self.max_positions,
-                              allow_technical_entry=self.allow_technical_entry)
+                              allow_technical_entry=self.allow_technical_entry,
+                              allow_newsless_technical=self.allow_newsless_technical)
         except PairEntryBlocked as error:
             return dict(status='blocked',reason=str(error))
         if plan is None:
@@ -196,7 +202,8 @@ class DemoCoordinator:
                 # an order has been confirmed on the shared journal.
                 plan = plan_entry(recommendation, context, snapshot, now,
                                   owned=self.owned(), max_positions=2,
-                                  allow_technical_entry=self.allow_technical_entry)
+                                  allow_technical_entry=self.allow_technical_entry,
+                                  allow_newsless_technical=self.allow_newsless_technical)
             self.db.execute('INSERT INTO smart_entries (signal,account,status,plan) VALUES (?,?,?,?)',
                             (signal, self.account_id, 'pending', json.dumps(plan, allow_nan=False)))
             self.db.commit()

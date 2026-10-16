@@ -50,6 +50,17 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(fields=fields),self.assertRaises(AnalysisError):
                 validate_recommendation(signal(),ctx,NOW,allow_technical_entry=True)
 
+    def test_explicit_rules_validation_accepts_closed_candles_without_news_health(self):
+        ctx=dict(observations(),news_feed_healthy=False,news_checked_at=None)
+        self.assertFalse(technical_evidence(ctx,NOW)['ready'])
+        self.assertTrue(technical_evidence(ctx,NOW,require_news_health=False)['ready'])
+        self.assertEqual(validate_recommendation(signal(),ctx,NOW,allow_technical_entry=True,
+                                                 allow_newsless_technical=True)['action'],'BUY')
+        ctx['quote_time']=NOW-31
+        with self.assertRaises(AnalysisError):
+            validate_recommendation(signal(),ctx,NOW,allow_technical_entry=True,
+                                    allow_newsless_technical=True)
+
     def test_mixed_range_shock_or_wrong_direction_blocks(self):
         for kind in ('range','mixed','shock','direction','unsupported'):
             ctx=observations(); rec=signal()
@@ -176,6 +187,40 @@ class ActivationFlowTests(unittest.TestCase):
         self.assertLessEqual(plan['planned_risk'],1.25)
         self.assertEqual(len(self.fixture.ai_calls),1)
 
+    def test_rules_trade_with_failed_news_and_without_ai_requests(self):
+        f=self.fixture
+        f.env.update(SMART_DECISION_ENGINE='rules',OPENAI_API_KEY='',OPENAI_MODEL='',EODHD_API_KEY='')
+        worker=f.make()
+        f.prime(worker)
+        worker.local.broker.entry_guard=worker.require_entry
+        self.assertEqual(worker.config.analysis_mode,'rules')
+        self.assertNotIn('news',worker.gate.limits)
+        self.run_market(worker)
+        self.assertEqual(len(self.orders()),1, f.events[-12:])
+        self.assertEqual(f.ai_calls,[])
+        self.assertIn('entry_confirmed',[e for e,_ in f.events])
+        self.assertTrue(any(e=='rules_evaluated' and fields['ready'] for e,fields in f.events))
+        plan=next(iter(worker.local.journal.owned().values()))
+        self.assertEqual(plan['evidence_basis'],'validated_closed_candles')
+        self.assertLessEqual(plan['planned_risk'],1.25)
+        self.run_market(worker)
+        self.assertEqual(len(self.orders()),1)  # same closed candle cannot repeat
+
+    def test_rules_do_not_trade_without_closed_candle_setup(self):
+        f=self.fixture
+        f.env['SMART_DECISION_ENGINE']='rules'
+        worker=f.make(); f.prime(worker)
+        from .marketdata import MarketCollector
+        def no_setup(collector,epic):
+            context=f.collect(collector,epic)
+            bars=context['timeframes']['MINUTE_15']['candles']
+            bars[-1]['c']=bars[-1]['o']
+            return context
+        with patch.object(MarketCollector,'collect_market',no_setup):
+            worker.opportunities()
+        self.assertEqual(self.orders(),[])
+        self.assertTrue(any(e=='entry_wait' for e,_ in f.events))
+
     def test_wait_is_recorded_with_reason_and_does_not_send(self):
         worker=self.worker(action='WAIT')
         self.run_market(worker)
@@ -224,6 +269,7 @@ class ActivationFlowTests(unittest.TestCase):
         self.assertEqual(Config(env).entry_evidence,NEWS_REQUIRED)
         with self.assertRaises(ValueError): Config(dict(env,SMART_ENTRY_EVIDENCE=TECHNICAL_OR_NEWS))
         with self.assertRaises(ValueError): Config(dict(self.fixture.env,SMART_ARMED=''))
+        with self.assertRaises(ValueError): Config(dict(env,SMART_DECISION_ENGINE='rules'))
 
 
 if __name__=='__main__': unittest.main()

@@ -379,6 +379,7 @@ class TrialWorkerTests(unittest.TestCase):
         self.env=dict(BOT_ACCOUNT_ID=APPROVED_ACCOUNT,CAP_API_KEY='private',CAP_IDENTIFIER='private',
                       CAP_API_PASSWORD='private',OPENAI_API_KEY='private',OPENAI_MODEL=MODEL,
                       EODHD_API_KEY='private',SMART_MARKETS='broad',SMART_MODE='demo',SMART_ARMED='DEMO_ONLY',
+                      SMART_DECISION_ENGINE='ai',
                       SMART_EXCLUSIVE_ACCOUNT=APPROVED_ACCOUNT,SMART_AI_CALLS_PER_DAY='4',
                       SMART_STATE_DIR=self.tmp.name+'/state',BOT_STATE_PATH=self.tmp.name+'/old.sqlite')
         clock_patch=patch('time.time',lambda:self.now)

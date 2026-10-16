@@ -13,14 +13,15 @@ NEWS_REQUIRED = 'news_required'
 TECHNICAL_OR_NEWS = 'technical_or_news'
 
 
-def technical_evidence(context, now):
+def technical_evidence(context, now, *, require_news_health=True):
     """An empty healthy news response differs from a missing or failed feed."""
     result = dict(ready=False, direction=None, reason='news_feed_unavailable',
                   basis='closed_candles_not_probability')
-    stamp = context.get('news_checked_at')
-    if (context.get('news_feed_healthy') is not True or type(stamp) not in (int, float)
-            or not math.isfinite(stamp) or not 0 <= now-stamp <= 21600):
-        return result
+    if require_news_health:
+        stamp = context.get('news_checked_at')
+        if (context.get('news_feed_healthy') is not True or type(stamp) not in (int, float)
+                or not math.isfinite(stamp) or not 0 <= now-stamp <= 21600):
+            return result
     if context.get('execution_supported') is not True:
         return dict(result, reason='observation_only_contract')
     brief = market_brief(context, now)

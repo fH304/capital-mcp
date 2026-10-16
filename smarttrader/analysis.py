@@ -123,7 +123,7 @@ def validate_context(context, now, *, allow_missing_news=False):
 
 
 def validate_recommendation(result, context, now, *, allow_missing_news=False,
-                            allow_technical_entry=False):
+                            allow_technical_entry=False, allow_newsless_technical=False):
     ids = validate_context(context, now, allow_missing_news=allow_missing_news or allow_technical_entry)
     if not isinstance(result, dict) or set(result) != set(PROPERTIES):
         raise AnalysisError('Invalid recommendation fields')
@@ -142,7 +142,8 @@ def validate_recommendation(result, context, now, *, allow_missing_news=False,
     technical = False
     if allow_technical_entry and not context['articles'] and action in ('BUY', 'SELL'):
         from .evidence import technical_evidence
-        checked = technical_evidence(context, now)
+        checked = technical_evidence(context, now,
+                                     require_news_health=not allow_newsless_technical)
         technical = checked['ready'] and checked['direction'] == action
     if action != 'WAIT' and ((not evidence and not technical) or result['assessment'] == 'reject'):
         raise AnalysisError('Action lacks supporting evidence')

@@ -60,8 +60,8 @@ class Config:
                 raise ValueError('Daily loss limit must be positive')
         self.key,self.user,self.password=(env.get(k,'') for k in ('CAP_API_KEY','CAP_IDENTIFIER','CAP_API_PASSWORD'))
         self.ai_key,self.model,self.news_key=(env.get(k,'') for k in ('OPENAI_API_KEY','OPENAI_MODEL','EODHD_API_KEY'))
-        if not all((self.key,self.user,self.password,self.ai_key,self.model,self.news_key)):
-            raise ValueError('Missing worker configuration')
+        if not all((self.key,self.user,self.password)):
+            raise ValueError('Missing broker configuration')
         self.broad=env.get('SMART_MARKETS','single')=='broad'
         if env.get('SMART_MARKETS','single') not in {'single','broad'}:
             raise ValueError('SMART_MARKETS must be single or broad')
@@ -73,6 +73,12 @@ class Config:
         self.trial=trial_flag=='1'
         if self.trial and (not is_approved_account(self.account) or not self.broad):
             raise ValueError('Trial is authorized for the approved broad demo account only')
+        self.decision_engine=env.get('SMART_DECISION_ENGINE',
+                                     'rules' if self.trial else 'ai')
+        if self.decision_engine not in {'rules','ai'} or (self.decision_engine=='rules' and not self.trial):
+            raise ValueError('Rules engine requires the approved demo trial')
+        if self.decision_engine=='ai' and not all((self.ai_key,self.model,self.news_key)):
+            raise ValueError('Missing AI or news configuration')
         # Two staged legs were explicitly authorized for this demo account.
         self.max_positions=int(env.get('SMART_PAIR_ENTRIES',
                                        '2' if self.trial and is_approved_account(self.account) else '1'))
@@ -82,9 +88,10 @@ class Config:
         if self.analysis_mode not in {'continuous','budgeted'}:
             raise ValueError('Invalid analysis mode')
         if self.trial:
-            self.analysis_mode='trial'
-            self.model=TRIAL_MODEL  # fixed model and verified token tariff
-        self.continuous=self.analysis_mode in {'continuous','trial'}
+            self.analysis_mode='rules' if self.decision_engine=='rules' else 'trial'
+            if self.decision_engine=='ai':
+                self.model=TRIAL_MODEL  # fixed model and verified token tariff
+        self.continuous=self.analysis_mode in {'continuous','trial','rules'}
         # Continuous monitoring is explicitly independent of the old account
         # quota, including an existing SMART_AI_CALLS_PER_DAY=4 deployment.
         self.calls=None if self.continuous else int(env.get('SMART_AI_CALLS_PER_DAY','4'))
@@ -102,6 +109,8 @@ class Config:
         self.technical_entries=self.entry_evidence==TECHNICAL_OR_NEWS
         if self.technical_entries and not (self.trial and is_approved_account(self.account)):
             raise ValueError('Technical entry policy is restricted to the approved demo trial')
+        if self.decision_engine=='rules' and not self.technical_entries:
+            raise ValueError('Rules engine requires the approved technical entry policy')
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
         if not isinstance(self.symbols,dict) or not 1<=len(self.symbols)<=32:
@@ -130,7 +139,7 @@ class Worker:
         self.config,self.clock,self.emit=config,clock,emit
         config.directory.mkdir(parents=True,exist_ok=True)
         self.local=threading.local()
-        self.gate=EntryGate()
+        self.gate=EntryGate({'positions':30,'opportunities':120} if config.decision_engine=='rules' else None)
         self.feed_lock=threading.Lock()
         self.order_lock=threading.RLock()
         self.articles={}
@@ -276,7 +285,8 @@ class Worker:
                                                selected_market_only=c.broad)
                               if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
             self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account,c.max_positions,
-                                              allow_technical_entry=c.technical_entries)
+                                              allow_technical_entry=c.technical_entries,
+                                              allow_newsless_technical=c.decision_engine=='rules')
         if not getattr(self.local,'broker',None):
             c=self.config
             broker=(self.broker_factory(self.local.daily) if self.broker_factory else
@@ -355,6 +365,8 @@ class Worker:
         return None
 
     def news(self):
+        if self.config.decision_engine=='rules':
+            return True  # Price-only demo rules do not request or depend on the news provider.
         if not hasattr(self.local,'news'):
             self.local.news=(self.news_factory() if self.news_factory else
                 NewsClient(self.config.news_key,str(self.config.directory/'news.sqlite')))
@@ -472,6 +484,8 @@ class Worker:
     def monitor_market(self,epic,context,scoring,articles=None):
         if not self.trial_active():
             return True
+        if self.config.decision_engine=='rules':
+            return self.rules_market(epic,context,scoring)
         if articles is None:
             with self.feed_lock:
                 articles=relevant_articles(epic,self.articles.get(epic,[]),self.clock())
@@ -545,6 +559,45 @@ class Worker:
         state,reconciled=self.entry_state(broker,journal)
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal,recommendation=result)
 
+    def rules_market(self,epic,context,scoring):
+        """One deterministic decision per closed candle, without paid AI/news calls."""
+        now=self.clock()
+        context=self.evidence_context(context,[])
+        validate_context(context,now,allow_missing_news=True)
+        if not hasattr(self.local,'schedule'):
+            self.local.schedule=MarketSchedule(str(self.config.directory/'scans.sqlite'),
+                                               self.config.account,self.config.analysis_interval)
+        candle=context['timeframes']['MINUTE_15']['candles'][-1]['t']
+        reservation=self.local.schedule.reserve(epic,candle,now)
+        if not reservation['reserved']:
+            return True
+        completed=False
+        try:
+            checked=technical_evidence(context,now,require_news_health=False)
+            setup=active_setup(context,now)
+            self.emit('rules_evaluated',epic=epic,candle=candle,ready=checked['ready'],
+                      reason=checked['reason'],strategy=setup['strategy'],
+                      news_independent=True,technical_score=scoring['score'])
+            if not checked['ready']:
+                self.emit('entry_wait',epic=epic,reason=checked['reason'])
+                completed=True
+                return True
+            result=dict(action=checked['direction'],assessment='acceptable',
+                        stop_level=setup['stop_level'],target_level=setup['target_level'],
+                        reason=setup['reason'],article_ids=[])
+            validate_recommendation(result,context,now,allow_technical_entry=True,
+                                    allow_newsless_technical=True)
+            broker,journal=self.resources()
+            if self.config.risk_mode=='auto':
+                self.local.daily.activate(epic)
+            state,reconciled=self.entry_state(broker,journal)
+            self.study_candidate(context,scoring,result)
+            outcome=self.evaluate(epic,context,[],state,reconciled,broker,journal,recommendation=result)
+            completed=True
+            return outcome
+        finally:
+            self.local.schedule.finish(epic,candle,'done' if completed else 'failed')
+
     def evaluate(self,epic,context,articles,state,reconciled,broker,journal,recommendation=None):
         if not self.trial_active():
             return True
@@ -562,7 +615,8 @@ class Worker:
             self.emit('entry_blocked',epic=epic,reason=capacity or 'news_or_daily_gate')
             return True  # observations usable; no entry performed
         if not articles and self.config.technical_entries:
-            checked=technical_evidence(context,self.clock())
+            checked=technical_evidence(context,self.clock(),
+                                       require_news_health=self.config.decision_engine!='rules')
             if not checked['ready']:
                 self.emit('entry_blocked',epic=epic,reason=checked['reason'])
                 return True
@@ -654,7 +708,8 @@ def main():
         worker=Worker(config)
         log('smart_worker_started',mode=config.mode,account_id=config.account,
             market_mode='broad' if config.broad else 'single',markets=len(config.symbols),
-            analysis_mode=config.analysis_mode,daily_analysis_cap=config.calls,
+            analysis_mode=config.analysis_mode,decision_engine=config.decision_engine,
+            daily_analysis_cap=config.calls,
             analysis_interval_seconds=config.analysis_interval,armed=config.armed,
             entry_evidence_policy=config.entry_evidence,
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
