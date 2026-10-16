@@ -577,6 +577,7 @@ class Worker:
             setup=active_setup(context,now)
             self.emit('rules_evaluated',epic=epic,candle=candle,ready=checked['ready'],
                       reason=checked['reason'],strategy=setup['strategy'],
+                      setup_reason=setup['reason'],rank_reason=scoring['reason'],
                       news_independent=True,technical_score=scoring['score'])
             if not checked['ready']:
                 self.emit('entry_wait',epic=epic,reason=checked['reason'])
