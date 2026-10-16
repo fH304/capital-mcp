@@ -38,6 +38,11 @@ LIMIT_NANO = 20 * 1_000_000_000
 BUDGET_INCREASE_ID = '2026-10-15-total-25usd-through-friday'
 BUDGET_INCREASE_AUTHORIZED_AT = 1792028178.0
 INCREASED_LIMIT_NANO = 25 * 1_000_000_000
+# User requested AI analysis again on 2026-10-16 after the $25 ceiling stopped it.
+# A second $5 grant is still for the same verified trial and Friday deadline.
+SECOND_BUDGET_INCREASE_ID = '2026-10-16-total-30usd-through-friday'
+SECOND_BUDGET_INCREASE_AUTHORIZED_AT = 1792118224.0
+SECOND_INCREASED_LIMIT_NANO = 30 * 1_000_000_000
 MAX_INPUT = 1_047_576
 MAX_OUTPUT = 2000
 INPUT_RATE, CACHED_RATE, OUTPUT_RATE = 400, 100, 1600  # nano USD/token
@@ -117,7 +122,10 @@ class TrialBudget:
                           else AUTHORIZED_STARTED_AT+DURATION)
         increase_authorized = (identity_ok and extension_authorized
                                and now >= BUDGET_INCREASE_AUTHORIZED_AT)
-        effective_limit = INCREASED_LIMIT_NANO if increase_authorized else LIMIT_NANO
+        second_increase_authorized = (increase_authorized
+                                      and now >= SECOND_BUDGET_INCREASE_AUTHORIZED_AT)
+        effective_limit = (SECOND_INCREASED_LIMIT_NANO if second_increase_authorized
+                           else INCREASED_LIMIT_NANO if increase_authorized else LIMIT_NANO)
         effective_end = authorized_end if identity_ok else end
         checkpoint,recovery_error = self._recovery()
         if recovery_error:
@@ -167,9 +175,14 @@ class TrialBudget:
                     remaining_usd=max(0,effective_limit-used)/1e9 if ledger_verified else None,requests=requests)
         if increase_authorized:
             result.update(original_budget_usd=LIMIT_NANO/1e9,
-                          budget_increase_id=BUDGET_INCREASE_ID,
-                          budget_increase_authorized_at=BUDGET_INCREASE_AUTHORIZED_AT,
+                          budget_increase_id=(SECOND_BUDGET_INCREASE_ID if second_increase_authorized
+                                              else BUDGET_INCREASE_ID),
+                          budget_increase_authorized_at=(SECOND_BUDGET_INCREASE_AUTHORIZED_AT
+                                                         if second_increase_authorized
+                                                         else BUDGET_INCREASE_AUTHORIZED_AT),
                           budget_increase_applied=ledger_verified)
+            if second_increase_authorized:
+                result['previous_budget_usd'] = INCREASED_LIMIT_NANO/1e9
         if extension_authorized:
             result.update(original_ends_at=end,extension_id=EXTENSION_ID,
                           extension_authorized_at=EXTENSION_AUTHORIZED_AT,

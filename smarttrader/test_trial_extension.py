@@ -16,6 +16,8 @@ from .trial import (APPROVED_ACCOUNT, AUTHORIZED_STARTED_AT, DURATION,
                     EXTENSION_AUTHORIZED_AT, EXTENSION_ID, EXTENSION_ORIGINAL_ENDS_AT,
                     EXTENDED_ENDS_AT, LIMIT_NANO, MAX_CHARGE, MODEL, TRIAL_ID,
                     BUDGET_INCREASE_AUTHORIZED_AT, INCREASED_LIMIT_NANO,
+                    SECOND_BUDGET_INCREASE_AUTHORIZED_AT, SECOND_BUDGET_INCREASE_ID,
+                    SECOND_INCREASED_LIMIT_NANO,
                     TrialBudget, TrialStopped)
 
 
@@ -72,6 +74,41 @@ class TrialExtensionTests(unittest.TestCase):
         budget.db.commit()
         self.assertEqual(budget.status(BUDGET_INCREASE_AUTHORIZED_AT)['stop_reason'],'budget_exhausted')
         self.assertEqual(budget.status(EXTENDED_ENDS_AT)['stop_reason'],'budget_exhausted')
+
+    def test_second_grant_resumes_verified_ledger_only_until_friday(self):
+        self.seed(reason='budget_exhausted')
+        budget=self.budget()
+        budget.db.execute('INSERT INTO trial_calls VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL)',
+                          ('prior-spend',TRIAL_ID,APPROVED_ACCOUNT,'GOLD',self.now,
+                           24_600_000_000,24_600_000_000))
+        budget.db.commit()
+        before=budget.status(SECOND_BUDGET_INCREASE_AUTHORIZED_AT-1)
+        self.assertEqual(before['stop_reason'],'budget_exhausted')
+        self.assertEqual(before['budget_usd'],25)
+        after=budget.status(SECOND_BUDGET_INCREASE_AUTHORIZED_AT)
+        self.assertTrue(after['trial_active'])
+        self.assertEqual(after['budget_increase_id'],SECOND_BUDGET_INCREASE_ID)
+        self.assertEqual(after['previous_budget_usd'],25)
+        self.assertEqual(after['authorized_budget_usd'],30)
+        self.assertEqual(after['accounted_usd'],24.6)
+        self.assertAlmostEqual(after['remaining_usd'],5.4)
+        self.assertEqual(budget.db.execute('SELECT limit_nano FROM trial_runs').fetchone()[0],LIMIT_NANO)
+        self.assertEqual(budget.db.execute('SELECT count(*) FROM trial_calls').fetchone()[0],1)
+        self.assertTrue(budget.reserve('EURUSD',MODEL,SECOND_BUDGET_INCREASE_AUTHORIZED_AT+1))
+        self.assertEqual(budget.status(EXTENDED_ENDS_AT)['stop_reason'],'duration_elapsed')
+
+    def test_second_grant_does_not_lift_other_stops_or_exceed_30(self):
+        self.seed(reason='usage_unverified')
+        budget=self.budget()
+        self.assertEqual(budget.status(SECOND_BUDGET_INCREASE_AUTHORIZED_AT)['stop_reason'],
+                         'usage_unverified')
+        budget.db.execute('UPDATE trial_runs SET stop_reason=?',('budget_exhausted',))
+        budget.db.execute('INSERT INTO trial_calls VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL)',
+                          ('too-much',TRIAL_ID,APPROVED_ACCOUNT,'GOLD',self.now,
+                           SECOND_INCREASED_LIMIT_NANO,SECOND_INCREASED_LIMIT_NANO))
+        budget.db.commit()
+        self.assertEqual(budget.status(SECOND_BUDGET_INCREASE_AUTHORIZED_AT+1)['stop_reason'],
+                         'budget_exhausted')
 
     def test_deadline_is_fixed_at_the_end_of_friday_in_dubai(self):
         end = datetime.fromtimestamp(EXTENDED_ENDS_AT-1, ZoneInfo('Asia/Dubai'))

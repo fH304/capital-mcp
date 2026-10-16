@@ -16,3 +16,9 @@ blocked. The fixed Friday deadline still applies, even with money remaining.
 After deploy, check `trial_status` for `trial_active`, `ledger_verified`,
 `authorized_budget_usd: 25`, `budget_increase_applied`, `accounted_usd`, and
 `unreconciled_usd`. If any stop remains, diagnose it without deleting state.
+
+On 16 October the user asked to reactivate AI analysis after the $25 ceiling
+stopped it. The second bounded grant adds at most $5, making the ceiling $30
+**total**, with no change to the Friday deadline. The same verified ledger,
+provider checkpoint, reservations, and stop checks apply. The status now reports
+`authorized_budget_usd: 30`, `previous_budget_usd: 25`, and the second grant ID.
