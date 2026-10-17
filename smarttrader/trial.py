@@ -34,10 +34,11 @@ EXTENSION_AUTHORIZED_AT = 1791818661.0
 EXTENSION_ORIGINAL_ENDS_AT = 1791743073.5271823
 EXTENDED_ENDS_AT = 1792180800.0
 # Authorized 2026-10-17: continue the same demo trial with deterministic
-# rules only, through 2026-10-18 14:00 Asia/Dubai. No ledger reset or AI grant.
-RULES_RENEWAL_ID = '2026-10-17-rules-only-through-sunday-1400-dubai'
+# rules only, through 2026-10-20 00:00 Asia/Dubai, covering Monday's
+# trading session. No ledger reset or AI grant.
+RULES_RENEWAL_ID = '2026-10-17-rules-only-through-monday-dubai'
 RULES_RENEWAL_AUTHORIZED_AT = 1792230174.0
-RULES_RENEWAL_ENDS_AT = 1792317600.0
+RULES_RENEWAL_ENDS_AT = 1792440000.0
 LIMIT_NANO = 20 * 1_000_000_000
 # User authorized $25 TOTAL on 2026-10-15, not a fresh trial or $25 extra.
 BUDGET_INCREASE_ID = '2026-10-15-total-25usd-through-friday'
