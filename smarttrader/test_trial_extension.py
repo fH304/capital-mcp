@@ -41,7 +41,7 @@ class TrialExtensionTests(unittest.TestCase):
         self.addCleanup(budget.close)
         return budget
 
-    def test_rules_only_renewal_preserves_ledger_and_expires_sunday(self):
+    def test_rules_only_renewal_preserves_ledger_and_expires_after_monday(self):
         self.seed(reason='duration_elapsed')
         budget=self.budget(RULES_RENEWAL_AUTHORIZED_AT)
         with sqlite3.connect(self.path) as db:
