@@ -146,7 +146,7 @@ class StructureTests(unittest.TestCase):
             r=study.report(d+'/s.sqlite','fixture',NOW)
             self.assertFalse(r['profitability_validated'])
             self.assertFalse(r['markets']['EURUSD']['structure_trend_v1']['comparison_ready'])
-            self.assertEqual(study.db.execute('SELECT count(*) FROM setup_forward').fetchone()[0],2)
+            self.assertEqual(study.db.execute('SELECT count(*) FROM setup_forward').fetchone()[0],3)
             study.close()
 
 
