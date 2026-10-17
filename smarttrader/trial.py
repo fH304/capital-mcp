@@ -33,6 +33,11 @@ EXTENSION_ID = '2026-10-12-through-friday-same-budget'
 EXTENSION_AUTHORIZED_AT = 1791818661.0
 EXTENSION_ORIGINAL_ENDS_AT = 1791743073.5271823
 EXTENDED_ENDS_AT = 1792180800.0
+# Authorized 2026-10-17: continue the same demo trial with deterministic
+# rules only, through 2026-10-18 14:00 Asia/Dubai. No ledger reset or AI grant.
+RULES_RENEWAL_ID = '2026-10-17-rules-only-through-sunday-1400-dubai'
+RULES_RENEWAL_AUTHORIZED_AT = 1792230174.0
+RULES_RENEWAL_ENDS_AT = 1792317600.0
 LIMIT_NANO = 20 * 1_000_000_000
 # User authorized $25 TOTAL on 2026-10-15, not a fresh trial or $25 extra.
 BUDGET_INCREASE_ID = '2026-10-15-total-25usd-through-friday'
@@ -118,7 +123,10 @@ class TrialBudget:
         extension_authorized = (self.account == APPROVED_ACCOUNT and is_approved_account(self.account)
                                 and AUTHORIZED_STARTED_AT+DURATION == EXTENSION_ORIGINAL_ENDS_AT
                                 and now >= EXTENSION_AUTHORIZED_AT)
-        authorized_end = (EXTENDED_ENDS_AT if extension_authorized
+        rules_renewal_authorized = (extension_authorized and identity_ok
+                                    and now >= RULES_RENEWAL_AUTHORIZED_AT)
+        authorized_end = (RULES_RENEWAL_ENDS_AT if rules_renewal_authorized else
+                          EXTENDED_ENDS_AT if extension_authorized
                           else AUTHORIZED_STARTED_AT+DURATION)
         increase_authorized = (identity_ok and extension_authorized
                                and now >= BUDGET_INCREASE_AUTHORIZED_AT)
@@ -187,6 +195,10 @@ class TrialBudget:
             result.update(original_ends_at=end,extension_id=EXTENSION_ID,
                           extension_authorized_at=EXTENSION_AUTHORIZED_AT,
                           extension_applied=identity_ok and ledger_verified)
+        if rules_renewal_authorized:
+            result.update(rules_renewal_id=RULES_RENEWAL_ID,
+                          rules_renewal_authorized_at=RULES_RENEWAL_AUTHORIZED_AT,
+                          prior_ends_at=EXTENDED_ENDS_AT)
         if checkpoint:
             result.update(accounted_usd_scope='provider_checkpoint_plus_local',
                           history_complete=False,budget_evidence='matched_provider_exports',
@@ -305,6 +317,8 @@ class TrialBudget:
 
     def reserve(self, epic, model, now):
         self._time(now)
+        if now >= RULES_RENEWAL_AUTHORIZED_AT:
+            raise TrialStopped('rules_only_renewal')
         if model != MODEL:
             raise TrialStopped('unpriced_trial_model')
         self.db.execute('BEGIN IMMEDIATE')
