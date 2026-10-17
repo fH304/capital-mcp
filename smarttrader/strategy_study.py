@@ -9,6 +9,7 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 from .strategy import trend_setup, range_setup
+from .short_study import short_setup
 from .spreadstudy import paper_outcome, COMPLETE, BAR_SECONDS, HORIZON_BARS
 
 
@@ -39,7 +40,7 @@ class StrategyStudy:
         self.db.commit()
 
     def observe(self,context,now,bars=()):
-        setups=[trend_setup(context,now),range_setup(context,now)]
+        setups=[trend_setup(context,now),range_setup(context,now),short_setup(context,now)]
         candle=context['timeframes']['MINUTE_15']['candles'][-1]['t']
         results=[]
         with self.db:
