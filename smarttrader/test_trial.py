@@ -40,6 +40,15 @@ def authorize_test_account(test):
     test.addCleanup(pin.stop)
 
 
+def legacy_trial_clock(test):
+    # Older AI fixtures use a synthetic 2027 clock to exercise the original
+    # budget. Keep those tests before the later rules-only renewal.
+    for module in ('smarttrader.trial','smarttrader.runner'):
+        guard=patch(module+'.RULES_RENEWAL_AUTHORIZED_AT',NOW+10*DURATION)
+        guard.start()
+        test.addCleanup(guard.stop)
+
+
 def response(action='WAIT', inp=6000, out=500, cached=0, status='completed'):
     result = (recommendation() if action=='BUY' else
               dict(action='WAIT',assessment='reject',stop_level=0,target_level=0,
@@ -63,6 +72,7 @@ class Response:
 class TrialBudgetTests(unittest.TestCase):
     def setUp(self):
         authorize_test_account(self)
+        legacy_trial_clock(self)
         self.tmp=tempfile.TemporaryDirectory()
         self.path=self.tmp.name+'/trial.sqlite'
         self.budgets=[]
@@ -242,6 +252,7 @@ class TrialBudgetTests(unittest.TestCase):
 class TrialLedgerGuardTests(unittest.TestCase):
     def setUp(self):
         authorize_test_account(self)
+        legacy_trial_clock(self)
         self.tmp=tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path=self.tmp.name+'/trial.sqlite'
@@ -365,6 +376,7 @@ class TrialLedgerGuardTests(unittest.TestCase):
 class TrialWorkerTests(unittest.TestCase):
     def setUp(self):
         authorize_test_account(self)
+        legacy_trial_clock(self)
         self.tmp=tempfile.TemporaryDirectory()
         self.now=NOW
         self.events=[]
