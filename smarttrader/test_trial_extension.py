@@ -18,6 +18,7 @@ from .trial import (APPROVED_ACCOUNT, AUTHORIZED_STARTED_AT, DURATION,
                     BUDGET_INCREASE_AUTHORIZED_AT, INCREASED_LIMIT_NANO,
                     SECOND_BUDGET_INCREASE_AUTHORIZED_AT, SECOND_BUDGET_INCREASE_ID,
                     SECOND_INCREASED_LIMIT_NANO,
+                    RULES_RENEWAL_AUTHORIZED_AT, RULES_RENEWAL_ENDS_AT,
                     TrialBudget, TrialStopped)
 
 
@@ -39,6 +40,23 @@ class TrialExtensionTests(unittest.TestCase):
         budget = TrialBudget(self.path, APPROVED_ACCOUNT, self.now if now is None else now)
         self.addCleanup(budget.close)
         return budget
+
+    def test_rules_only_renewal_preserves_ledger_and_expires_sunday(self):
+        self.seed(reason='duration_elapsed')
+        budget=self.budget(RULES_RENEWAL_AUTHORIZED_AT)
+        with sqlite3.connect(self.path) as db:
+            db.execute('UPDATE trial_runs SET last_seen=?,stop_reason=?',
+                       (EXTENDED_ENDS_AT,'duration_elapsed'))
+        before=budget.status(RULES_RENEWAL_AUTHORIZED_AT-1)
+        self.assertFalse(before['trial_active'])
+        after=budget.status(RULES_RENEWAL_AUTHORIZED_AT)
+        self.assertTrue(after['trial_active'])
+        self.assertEqual(after['authorized_ends_at'],RULES_RENEWAL_ENDS_AT)
+        self.assertEqual(after['authorized_budget_usd'],30)
+        self.assertEqual(after['requests'],before['requests'])
+        with self.assertRaisesRegex(TrialStopped,'rules_only_renewal'):
+            budget.reserve('EURUSD',MODEL,RULES_RENEWAL_AUTHORIZED_AT)
+        self.assertEqual(budget.status(RULES_RENEWAL_ENDS_AT)['stop_reason'],'duration_elapsed')
 
     def test_explicit_total_25_grant_lifts_only_verified_budget_stop(self):
         self.seed(reason='budget_exhausted')
@@ -269,8 +287,8 @@ class TrialExtensionTests(unittest.TestCase):
         with self.assertRaisesRegex(TrialStopped, 'duration_elapsed'):
             budget.require_entry(EXTENDED_ENDS_AT)
         restarted = self.budget(EXTENDED_ENDS_AT+86400)
-        self.assertEqual(restarted.status(EXTENDED_ENDS_AT+86400)['ends_at'], EXTENDED_ENDS_AT)
-        with self.assertRaisesRegex(TrialStopped, 'duration_elapsed'):
+        self.assertEqual(restarted.status(EXTENDED_ENDS_AT+86400)['ends_at'], RULES_RENEWAL_ENDS_AT)
+        with self.assertRaisesRegex(TrialStopped, 'rules_only_renewal'):
             restarted.reserve('GOLD', MODEL, EXTENDED_ENDS_AT+86400)
 
     def test_clock_rollback_after_new_expiry_does_not_reopen_trial(self):
