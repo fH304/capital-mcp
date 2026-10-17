@@ -74,7 +74,7 @@ def paper_outcome(candidate,bars,now):
     first=by_time[start]
     valid=(stop<first['bid']['o']<=first['ask']['o']<target if action=='BUY' else
            target<first['bid']['o']<=first['ask']['o']<stop)
-    if not valid or risk<=0 or reward<2*risk:
+    if not valid or risk<=0 or reward<candidate.get('min_reward_risk',2)*risk:
         return dict(status='invalid_next_open',paper_entry=entry)
     for index in range(HORIZON_BARS):
         stamp=start+index*BAR_SECONDS
