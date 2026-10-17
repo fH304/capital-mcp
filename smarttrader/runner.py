@@ -25,7 +25,8 @@ from .spreadstudy import SpreadStudy
 from .strategy import active_setup
 from .strategy_study import StrategyStudy
 from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
-from .trial import is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped
+from .trial import (is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped,
+                    RULES_RENEWAL_AUTHORIZED_AT)
 from .evidence import NEWS_REQUIRED, TECHNICAL_OR_NEWS, technical_evidence
 
 
@@ -171,6 +172,8 @@ class Worker:
     def trial_active(self):
         if not self.config.trial:
             return True
+        if self.clock() >= RULES_RENEWAL_AUTHORIZED_AT and self.config.decision_engine != 'rules':
+            return False
         status=self.trial_budget().status(self.clock())
         if not status['trial_active'] and not self.trial_stop_logged:
             self.trial_stop_logged=True
