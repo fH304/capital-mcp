@@ -436,6 +436,9 @@ class Worker:
         try:
             collector=MarketCollector(broker,self.clock)
             context=collector.collect_market(epic)
+            if (self.config.decision_engine=='rules' and epic in MARKETS
+                    and hasattr(collector,'attach_retest_history')):
+                context=collector.attach_retest_history(context)
             scoring=rank(context)
             self.observe_spread(context,scoring,getattr(collector,'execution_candles',()))
             self.candidates[epic]=dict(context=context,**scoring)

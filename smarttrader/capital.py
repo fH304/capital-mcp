@@ -163,7 +163,7 @@ class CapitalDemo:
 
     def prices(self,epic,resolution,count=40):
         from .candles import RESOLUTIONS
-        if resolution not in RESOLUTIONS or type(count) is not int or not 1<=count<=40:
+        if resolution not in (*RESOLUTIONS, 'DAY') or type(count) is not int or not 1<=count<=40:
             raise CapitalError('Invalid historical price request')
         self.verify_session()
         data=self.get('/prices/'+identifier(epic)+'?resolution='+resolution+'&max='+str(count))

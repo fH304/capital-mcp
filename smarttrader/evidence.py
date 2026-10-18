@@ -28,7 +28,7 @@ def technical_evidence(context, now, *, require_news_health=True):
     # Recent gaps are rejected by validate_frames. Older market closures remain
     # visible in the brief; they do not alone invalidate fresh closed candles.
     regime = brief['regime']
-    if setup['ready'] and setup['strategy'] == 'range_rejection_v1':
+    if setup['ready'] and setup['strategy'] in ('range_rejection_v1','daily_breakout_retest_v1'):
         return dict(result,**{k:v for k,v in setup.items() if k not in result},
                     ready=True,direction=setup['direction'],reason=setup['reason'])
     if regime not in ('trend_up', 'trend_down'):

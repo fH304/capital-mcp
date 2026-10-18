@@ -30,6 +30,22 @@ class MarketCollector:
                      quote_currency=quote.get('quote_currency','USD'),
                      price_basis='candles are bid/ask midpoints; quote bid/ask are executable',
                      volume_basis='optional Capital lastTradedVolume; not asserted as global exchange volume')
+        
+    def attach_retest_history(self,context):
+        """Fetch daily and recent intraday candles only for the new core-market route."""
+        from .retest_strategy import stamp
+        from .capital import CapitalError
+        now=self.clock()
+        try:
+            daily=self.broker.prices(context['epic'],'DAY',25)
+        except CapitalError:
+            return context
+        closed=[row for row in daily if stamp(row)+86400<=now]
+        if len(closed)>=21:
+            hourly=self.broker.prices(context['epic'],'HOUR',40)
+            m15=self.broker.prices(context['epic'],'MINUTE_15',40)
+            context['retest_history']=dict(daily=closed,hourly=hourly,m15=m15)
+        return context
 
     def collect(self,epic,articles):
         context=self.collect_market(epic)

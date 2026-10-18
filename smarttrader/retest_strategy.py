@@ -1,8 +1,4 @@
-"""Experimental daily breakout / hourly retest / M15 confirmation.
-
-Pure, read-only decision functions. Nothing in the trading worker imports this
-module, so a historical study cannot authorize a broker order.
-"""
+"""Daily breakout / hourly retest / M15 confirmation rules for demo trading."""
 from datetime import datetime, timezone
 from statistics import mean
 
@@ -75,8 +71,8 @@ def m15_confirmation(row, retest):
             else (high-close)/(high-low) >= .75)
 
 
-def entry(retest, next_open):
-    """Executable next-open sides, fixed 2R target; 10% spread-to-stop cap."""
+def entry(retest, next_open, stress=0):
+    """Executable sides, stressed 2R target; 10% spread-to-stop cap."""
     sign = retest['direction']
     price = next_open['ask' if sign == 1 else 'bid']
     spread = next_open['ask'] - next_open['bid']
@@ -86,5 +82,44 @@ def entry(retest, next_open):
     if sign * (price - retest['level']) > .5 * retest['atr_hour']:
         return None
     return dict(direction=sign, entry=price, stop=retest['stop'],
-                target=price + sign * 2 * risk, risk=risk, spread=spread,
+                target=price + sign * (2 * risk + 3 * stress), risk=risk, spread=spread,
                 strategy=VERSION)
+
+
+def live_setup(context, now):
+    """Only the latest completed H1/M15 pair can authorize a fresh demo setup."""
+    base=dict(ready=False,direction=None,reason='daily_retest_not_ready',strategy=VERSION,
+              validated_profitability=False)
+    history=context.get('retest_history')
+    if not history:
+        return base
+    try:
+        daily=history['daily']
+        hourly=sorted((r for r in history['hourly'] if stamp(r)+3600<=now),key=stamp)
+        m15=sorted((r for r in history['m15'] if stamp(r)+900<=now),key=stamp)
+        if len(hourly)<16 or not m15 or len(daily)<21:
+            return dict(base,reason='daily_retest_history_short')
+        last=hourly[-1]
+        when=stamp(last)
+        if not when+3600<=now<when+4500 or stamp(m15[-1])!=when+2700:
+            return dict(base,reason='daily_retest_signal_stale')
+        if any(stamp(b)-stamp(a)!=3600 for a,b in zip(hourly[-16:-1],hourly[-15:])):
+            return dict(base,reason='daily_retest_hourly_gap')
+        signals=daily_breakouts(daily)
+        for breakout in reversed(signals):
+            retest=hourly_retest(hourly,len(hourly)-1,breakout)
+            if retest is None or not m15_confirmation(m15[-1],retest):
+                continue
+            stress=.1*retest['atr_hour']
+            trade=entry(retest,context,stress=stress)
+            if trade is None or trade['stop']<=0 or trade['target']<=0:
+                return dict(base,reason='daily_retest_cost_or_chase')
+            return dict(base,ready=True,direction='BUY' if trade['direction']==1 else 'SELL',
+                        reason='daily_breakout_hourly_retest_m15_confirmation',
+                        invalidation_level=trade['stop'],target_ceiling=trade['target'],
+                        stop_level=trade['stop'],target_level=trade['target'],entry_price=trade['entry'],
+                        slippage_stress_distance=stress,reference_level=retest['level'],
+                        target_basis='stressed_two_r',atr=retest['atr_hour'])
+        return base
+    except (ValueError,KeyError,TypeError,IndexError,ZeroDivisionError):
+        return dict(base,reason='daily_retest_invalid_data')
