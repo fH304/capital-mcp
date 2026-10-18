@@ -36,7 +36,8 @@ def entry_limits(data, owned, *, direction, assessment, candle):
     fx, margin_fx = value(data, 'quote_to_account'), value(data, 'fx_rate')
     bid, ask = value(data, 'bid'), value(data, 'ask')
     leverage = value(data, 'leverage')
-    if leverage < 1 or direction not in {'BUY', 'SELL'} or ask < bid:
+    margin_factor = value(data, 'margin_factor')
+    if leverage < 1 or margin_factor > 1 or margin_factor < 1/leverage or direction not in {'BUY', 'SELL'} or ask < bid:
         raise ExposureError('Invalid exposure contract')
     if data.get('hedging_mode') is not True:
         raise ExposureError('Separate demo entries require verified hedging mode')
@@ -83,8 +84,10 @@ def entry_limits(data, owned, *, direction, assessment, candle):
             raise ExposureError('Invalid existing stop distance')
         open_risk += max(value(plan, 'planned_risk'), value(plan, 'actual_risk'),
                          size*distance*conversion)
+        original_margin_factor = value(plan, 'margin_factor') if 'margin_factor' in plan else Decimal(1)/old_leverage
         open_margin += max(value(plan, 'required_margin'), value(plan, 'actual_margin'),
-                           size*ask/old_leverage*margin_fx)
+                           size*ask*max(margin_factor, original_margin_factor,
+                                        Decimal(1)/old_leverage)*margin_fx)
     pair_limit = baseline*PAIR_FRACTION
     risk_budget = min(equity*TRADE_FRACTION, pair_limit-open_risk, daily-open_risk)
     margin_limit = available*MARGIN_FRACTION
