@@ -120,7 +120,8 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
                     combined_planned_risk=limits['existing_risk']+plan['planned_risk'],
                     combined_required_margin=limits['existing_margin']+plan['required_margin'],
                     pair_position_limit=2, signal_candle=candle, assessment=result['assessment'],
-                    leverage=snapshot['leverage'], confidence_basis='assessment_not_probability')
+                    leverage=snapshot['leverage'], margin_factor=snapshot['margin_factor'],
+                    confidence_basis='assessment_not_probability')
     return plan
 
 
