@@ -114,11 +114,22 @@ class Config:
             raise ValueError('Rules engine requires the approved technical entry policy')
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
-        if not isinstance(self.symbols,dict) or not 1<=len(self.symbols)<=32:
-            raise ValueError('One to 32 news mappings required')
+        if not isinstance(self.symbols,dict) or not 1<=len(self.symbols) or (not self.broad and len(self.symbols)>32):
+            raise ValueError('Invalid news mappings')
         for epic,symbol in self.symbols.items():
             identifier(epic)
             identifier(symbol)
+
+    def add_crypto_markets(self,epics):
+        if not (self.broad and self.trial and self.decision_engine=='rules'):
+            return 0
+        added=0
+        for epic in epics:
+            identifier(epic)
+            if epic not in self.symbols:
+                self.symbols[epic]=epic
+                added+=1
+        return added
 
 
 class WorkerLock:
@@ -430,7 +441,7 @@ class Worker:
             self.candidates[epic]=dict(context=context,**scoring)
             if self.config.risk_mode=='auto':
                 self.local.daily.update_market(epic,context['timeframes']['MINUTE_15'],self.clock())
-            self.emit('market_scanned',epic=epic,asset_class=MARKETS[epic][0],
+            self.emit('market_scanned',epic=epic,asset_class=MARKETS[epic][0] if epic in MARKETS else 'crypto',
                       score=scoring['score'],reason=scoring['reason'],
                       execution_supported=context['execution_supported'],quote_currency=context['quote_currency'],
                       **self.spread_fields(scoring))
@@ -709,6 +720,20 @@ def main():
         if args.once and config.armed:
             raise ValueError('--once is available in preview only')
         lock=WorkerLock(config.legacy+'.lock')
+        if config.broad and config.trial and config.decision_engine=='rules':
+            # Discovery precedes risk-controller creation so its policy includes
+            # every account-visible crypto market. Existing markets survive a
+            # temporary catalogue failure; the failure is visible in logs.
+            try:
+                catalogue=CapitalDemo(key=config.key,user=config.user,password=config.password,
+                                      account_id=config.account,daily_controller=None,armed=False)
+                catalogue.login()
+                crypto=catalogue.available_crypto_epics()
+                added=config.add_crypto_markets(crypto)
+                log('crypto_universe_discovered',available=len(crypto),added=added,
+                    total_markets=len(config.symbols))
+            except CapitalError as error:
+                log('crypto_universe_unavailable',reason=str(error))
         worker=Worker(config)
         log('smart_worker_started',mode=config.mode,account_id=config.account,
             market_mode='broad' if config.broad else 'single',markets=len(config.symbols),
