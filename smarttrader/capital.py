@@ -310,7 +310,7 @@ class CapitalDemo:
                     if (prefs.get('hedgingMode') is not True or leverage < 1
                             or not isinstance(choices, list) or leverage not in choices
                             or any(number(x, True) < 1 for x in choices)
-                            or not math.isclose(margin, 1/leverage, rel_tol=1e-6, abs_tol=1e-9)):
+                            or margin + 1e-9 < 1/leverage):
                         raise CapitalError('Unverified hedging or leverage/margin convention')
                     preferences = dict(hedging_mode=True, leverage=leverage)
                 def size_rule(name):
@@ -362,6 +362,8 @@ class CapitalDemo:
                 limits = self._pair_limits(data, plan)
                 if plan.get('leverage') != data['leverage']:
                     raise EntryPreflightBlocked('leverage_changed_before_submission')
+                if plan.get('margin_factor') != data['margin_factor']:
+                    raise EntryPreflightBlocked('margin_factor_changed_before_submission')
             size = number(plan['size'], True)
             if not data['min_size'] <= size <= data['max_size'] or Decimal(str(size)) % Decimal(str(data['size_step'])):
                 raise CapitalError('Invalid broker size increment')
