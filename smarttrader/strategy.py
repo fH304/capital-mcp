@@ -107,7 +107,10 @@ def range_setup(context, now):
 
 
 def active_setup(context, now):
-    """Preserve the trend route; allow a bounded range edge on demo accounts."""
+    """Select the explicitly configured demo strategy."""
+    if context.get('strategy_policy') == 'three_month_retest_only':
+        from .retest_strategy import live_setup
+        return live_setup(context,now)
     if context.get('retest_history'):
         from .retest_strategy import live_setup
         retest=live_setup(context,now)

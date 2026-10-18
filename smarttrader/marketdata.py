@@ -40,7 +40,7 @@ class MarketCollector:
             daily=self.broker.prices(context['epic'],'DAY',25)
         except CapitalError:
             return context
-        closed=[row for row in daily if stamp(row)+86400<=now]
+        closed=sorted((row for row in daily if stamp(row)+86400<=now),key=stamp)
         if len(closed)>=21:
             hourly=self.broker.prices(context['epic'],'HOUR',40)
             m15=self.broker.prices(context['epic'],'MINUTE_15',40)

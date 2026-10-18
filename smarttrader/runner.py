@@ -112,6 +112,7 @@ class Config:
             raise ValueError('Technical entry policy is restricted to the approved demo trial')
         if self.decision_engine=='rules' and not self.technical_entries:
             raise ValueError('Rules engine requires the approved technical entry policy')
+        self.retest_only=self.decision_engine=='rules'
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
         if not isinstance(self.symbols,dict) or not 1<=len(self.symbols) or (not self.broad and len(self.symbols)>32):
@@ -207,7 +208,9 @@ class Worker:
         with self.feed_lock:
             feed=dict(self.news_checks.get(context['epic'],{}))
         return dict(context,articles=articles,news_feed_healthy=feed.get('healthy',False),
-                    news_checked_at=feed.get('checked_at'),entry_evidence_policy=self.config.entry_evidence)
+                    news_checked_at=feed.get('checked_at'),entry_evidence_policy=self.config.entry_evidence,
+                    strategy_policy=('three_month_retest_only' if self.config.decision_engine=='rules'
+                                     else 'legacy_ai'))
 
     def decision_fields(self,context,scoring):
         checked=technical_evidence(context,self.clock()) if self.config.technical_entries else None
@@ -429,7 +432,8 @@ class Worker:
 
     def broad_opportunities(self):
         broker,journal=self.resources()
-        epics=list(self.config.symbols)
+        epics=([epic for epic in self.config.symbols if epic in MARKETS]
+               if self.config.retest_only else list(self.config.symbols))
         epic=epics[self.rotation%len(epics)]
         self.rotation+=1
         observed=None
@@ -723,7 +727,7 @@ def main():
         if args.once and config.armed:
             raise ValueError('--once is available in preview only')
         lock=WorkerLock(config.legacy+'.lock')
-        if config.broad and config.trial and config.decision_engine=='rules':
+        if config.broad and config.trial and config.decision_engine=='rules' and not config.retest_only:
             # Discovery precedes risk-controller creation so its policy includes
             # every account-visible crypto market. Existing markets survive a
             # temporary catalogue failure; the failure is visible in logs.
@@ -751,7 +755,7 @@ def main():
             entry_policy='staged_owned_same_pair' if config.max_positions==2 else 'flat_only',
             leverage_policy='broker_current_no_probability_increase',
             analysis_framework=FRAMEWORK,strategy_research=STRATEGY,
-            strategy_execution='daily_breakout_retest_core_plus_existing_demo_entry_gates',
+            strategy_execution='three_month_daily_retest_only_demo',
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):

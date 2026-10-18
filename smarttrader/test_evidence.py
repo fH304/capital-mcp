@@ -196,7 +196,7 @@ class ActivationFlowTests(unittest.TestCase):
         self.assertLessEqual(plan['planned_risk'],1.25)
         self.assertEqual(len(self.fixture.ai_calls),1)
 
-    def test_rules_trade_with_failed_news_and_without_ai_requests(self):
+    def test_rules_ignore_legacy_trend_without_daily_retest(self):
         f=self.fixture
         f.env.update(SMART_DECISION_ENGINE='rules',OPENAI_API_KEY='',OPENAI_MODEL='',EODHD_API_KEY='')
         worker=f.make()
@@ -205,15 +205,12 @@ class ActivationFlowTests(unittest.TestCase):
         self.assertEqual(worker.config.analysis_mode,'rules')
         self.assertNotIn('news',worker.gate.limits)
         self.run_market(worker)
-        self.assertEqual(len(self.orders()),1, f.events[-12:])
+        self.assertEqual(len(self.orders()),0, f.events[-12:])
         self.assertEqual(f.ai_calls,[])
-        self.assertIn('entry_confirmed',[e for e,_ in f.events])
-        self.assertTrue(any(e=='rules_evaluated' and fields['ready'] for e,fields in f.events))
-        plan=next(iter(worker.local.journal.owned().values()))
-        self.assertEqual(plan['evidence_basis'],'validated_closed_candles')
-        self.assertLessEqual(plan['planned_risk'],1.25)
+        self.assertTrue(any(e=='rules_evaluated' and fields['reason']=='daily_retest_not_ready'
+                            for e,fields in f.events))
         self.run_market(worker)
-        self.assertEqual(len(self.orders()),1)  # same closed candle cannot repeat
+        self.assertEqual(len(self.orders()),0)
 
     def test_rules_do_not_trade_without_closed_candle_setup(self):
         f=self.fixture

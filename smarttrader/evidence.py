@@ -23,6 +23,10 @@ def technical_evidence(context, now, *, require_news_health=True):
             return result
     if context.get('execution_supported') is not True:
         return dict(result, reason='observation_only_contract')
+    if context.get('strategy_policy') == 'three_month_retest_only':
+        setup=active_setup(context,now)
+        return dict(result,**{k:v for k,v in setup.items() if k not in result},
+                    ready=setup['ready'],direction=setup['direction'],reason=setup['reason'])
     brief = market_brief(context, now)
     setup=active_setup(context,now)
     # Recent gaps are rejected by validate_frames. Older market closures remain
