@@ -751,7 +751,7 @@ def main():
             entry_policy='staged_owned_same_pair' if config.max_positions==2 else 'flat_only',
             leverage_policy='broker_current_no_probability_increase',
             analysis_framework=FRAMEWORK,strategy_research=STRATEGY,
-            strategy_execution='existing_entry_gates_new_templates_shadow_only',
+            strategy_execution='daily_breakout_retest_core_plus_existing_demo_entry_gates',
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):

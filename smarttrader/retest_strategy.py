@@ -82,7 +82,8 @@ def entry(retest, next_open, stress=0):
     if sign * (price - retest['level']) > .5 * retest['atr_hour']:
         return None
     return dict(direction=sign, entry=price, stop=retest['stop'],
-                target=price + sign * (2 * risk + 3 * stress), risk=risk, spread=spread,
+                target=price + sign * (2 * risk + 3 * stress + (risk * 1e-9 if stress else 0)),
+                risk=risk, spread=spread,
                 strategy=VERSION)
 
 
