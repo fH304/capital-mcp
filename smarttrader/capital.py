@@ -73,7 +73,7 @@ class CapitalDemo:
 
     def _request(self, method, path, payload=None, preflight=None):
         # Fixed host; DELETE is enabled only inside verified submit_close.
-        allowed = (method == 'GET' and (path in {'/session', '/accounts', '/positions', '/workingorders', '/accounts/preferences'}
+        allowed = (method == 'GET' and (path in {'/session', '/accounts', '/positions', '/workingorders', '/accounts/preferences', '/markets'}
                     or re.fullmatch(r'/(markets|positions|confirms)/[A-Za-z0-9_.:%-]+', path)))
         allowed = allowed or (method == 'POST' and path in {'/session', '/positions'})
         allowed = allowed or (method=='GET' and re.fullmatch(
@@ -100,9 +100,10 @@ class CapitalDemo:
             # The worker repeats this check after its shared request pacing.
             request.capital_preflight = preflight
             try:
+                max_bytes=16000000 if path=='/markets' else 2000000
                 with self.opener(request, timeout=20) as response:
-                    raw, headers = response.read(2000001), response.headers
-                if len(raw) > 2000000:
+                    raw, headers = response.read(max_bytes+1), response.headers
+                if len(raw) > max_bytes:
                     raise CapitalError('Oversized broker response')
                 data = json.loads(raw)
                 if not isinstance(data, dict):
@@ -134,6 +135,25 @@ class CapitalDemo:
             raise CapitalError('Authenticated session required')
         # No implicit relogin or account change inside an order sequence.
         return self._request('GET', path)[0]
+
+    def available_crypto_epics(self):
+        """Discover account-visible crypto CFDs; order checks still use market detail."""
+        self.verify_session()
+        markets=self.get('/markets').get('markets')
+        if not isinstance(markets,list) or not markets:
+            raise CapitalError('Invalid broker market catalogue')
+        epics=set()
+        for market in markets:
+            if not isinstance(market,dict):
+                raise CapitalError('Invalid broker market catalogue')
+            if market.get('instrumentType')!='CRYPTOCURRENCIES':
+                continue
+            epic=market.get('epic')
+            identifier(epic)
+            epics.add(epic)
+        if not epics:
+            raise CapitalError('No cryptocurrency markets in broker catalogue')
+        return sorted(epics)
 
     def verify_session(self):
         session = self.get('/session')
