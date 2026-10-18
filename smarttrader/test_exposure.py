@@ -18,7 +18,7 @@ from .trial import TrialEntryBlocked
 
 
 def data():
-    return dict(snapshot(),hedging_mode=True,leverage=200,fx_rate=1,
+    return dict(snapshot(),hedging_mode=True,leverage=200,margin_factor=.005,fx_rate=1,
                 account_currency='USD',quote_currency='USD',conversion_time=NOW)
 
 
@@ -65,6 +65,11 @@ class ExposureTests(unittest.TestCase):
     def test_existing_margin_uses_actual_old_leverage(self):
         self.plan['leverage']=self.actual['position']['leverage']=10
         self.assertAlmostEqual(self.limits()['existing_margin'],11.02)
+    def test_market_margin_factor_reserves_existing_leg_at_current_price(self):
+        self.data.update(leverage=20,margin_factor=.5,bid=1.102,ask=1.103)
+        self.plan['leverage']=self.actual['position']['leverage']=20
+        self.plan.update(margin_factor=.5,required_margin=55,actual_margin=55)
+        self.assertAlmostEqual(self.limits()['existing_margin'],55.15)
     def test_legacy_journal_without_group_metadata_is_not_adopted(self):
         del self.plan['group_equity']
         with self.assertRaises(ValueError): self.limits()
@@ -113,6 +118,7 @@ class PairTransport(PriceTransport):
         self.references={}
         self.sequence=0
         self.leverage=200
+        self.market_margin_factor=None
         self.hedging=True
         self.orders=[]
         self.fail_post=False
@@ -133,7 +139,8 @@ class PairTransport(PriceTransport):
                 'CURRENCIES':dict(current=self.leverage,available=[1,10,20,100,200])})
         elif path.startswith('/markets/'):
             result=copy.deepcopy(self.market)
-            result['instrument']['marginFactor']=100/self.leverage
+            result['instrument']['marginFactor']=(self.market_margin_factor if self.market_margin_factor is not None
+                                                   else 100/self.leverage)
             result['snapshot']['updateTimeUTC']=datetime.fromtimestamp(self.clock(),timezone.utc).isoformat()
         elif path=='/workingorders': result={'workingOrders':copy.deepcopy(self.orders)}
         elif path=='/positions' and method=='GET': result={'positions':list(self.positions.values())}
@@ -230,6 +237,32 @@ class PairIntegrationTests(unittest.TestCase):
     def test_missing_hedging_or_malformed_leverage_never_submits(self):
         self.transport.hedging=False
         with self.assertRaises(CapitalError): self.process()
+        self.assertEqual(self.posts(),0)
+    def test_market_margin_50_percent_with_preference_20_is_budgeted(self):
+        self.transport.leverage=20
+        self.transport.market_margin_factor=50
+        info=self.broker.snapshot('EURUSD')
+        self.assertEqual(info['margin_factor'],.5)
+        self.assertAlmostEqual(info['margin_per_unit'],info['ask']*.5)
+        result=self.process()
+        self.assertEqual(result['status'],'confirmed')
+        self.assertEqual(result['plan']['margin_factor'],.5)
+        self.assertLessEqual(result['plan']['actual_margin'],100)
+        self.assertFalse(any(m=='PUT' for m,_,_ in self.transport.calls))
+    def test_lower_market_margin_than_preference_blocks_before_post(self):
+        self.transport.leverage=20
+        self.transport.market_margin_factor=2
+        with self.assertRaises(CapitalError): self.process()
+        self.assertEqual(self.posts(),0)
+    def test_margin_factor_change_after_reservation_is_known_unsent(self):
+        self.transport.leverage=20
+        self.transport.market_margin_factor=50
+        original=self.broker.submit_entry
+        def submit(plan):
+            self.transport.market_margin_factor=60
+            return original(plan)
+        self.broker.submit_entry=submit
+        self.assertEqual(self.process()['status'],'blocked')
         self.assertEqual(self.posts(),0)
     def test_restart_keeps_group_ownership_and_two_position_limit(self):
         self.process()
