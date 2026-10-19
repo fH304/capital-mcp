@@ -1,22 +1,21 @@
-# Deterministic demo rules
+# Independent H1 and D1 trend rules (demo)
 
-The approved demo trial defaults to `SMART_DECISION_ENGINE=rules`. No OpenAI
-or EODHD request is made by this engine. An explicit `ai` setting preserves
-the previous budgeted AI route. The original trial identity and its Friday
-deadline still apply; switching engines never resets the ledger or authorizes
-another account.
+The approved demo rules engine makes no OpenAI or news requests. The previous
+daily breakout, hourly retest and M15 confirmation route is no longer used.
+H1 and D1 are evaluated independently from **closed candles**; neither route
+requires a signal or directional agreement from the other.
 
-Each closed M15 candle is evaluated once per market. The existing trend
-pullback/retest and bounded range edge rejection setups supply direction,
-invalidation, observed target and an assumed slippage stress. A signal must
-pass the independently recalculated candle structure, executable bid/ask
-reward/risk of at least 2:1, Capital demo account checks, daily and grouped
-risk limits, ownership reconciliation, and broker confirmation. The news feed
-is not a prerequisite for this price-only mode. A missing or stale Capital
-quote, invalid candles, insufficient structure or exhausted trial still blocks.
+Each route requires at least 21 closed bars. It considers a BUY when its last
+10 closes average above its last 20 closes and the latest close exceeds the
+previous bar's high. A SELL reverses both comparisons. The route uses the
+latest five lows/highs and 0.1 ATR as its protective stop. The proposed
+target covers at least twice the entry-to-stop distance plus 0.1 ATR execution
+stress. Broker executable bid/ask are used for the entry and checked again
+before submission. One signal is reserved per route and closed bar.
 
-Log `rules_evaluated` records a deterministic decision for each market/candle;
-`entry_wait`, `entry_blocked`, `entry_confirmed` and `trial_status` show the
-next gate. `ready` expresses only that a rule was met, not a calibrated win
-probability or demonstrated profitability. Compare fills, costs, drawdowns,
-and time in market against the prior AI trial before any live use.
+M15 prices remain in the common account safety and loss-limit pipeline; they
+do not decide trade direction. Missing daily data does not stop the hourly
+signal; missing hourly data does not stop the daily signal. The service may
+still wait because of stale quotes, invalid protection, insufficient margin,
+broker restrictions, existing exposure or approved trial limits. The rules do
+not imply a measured success probability or guaranteed profit.

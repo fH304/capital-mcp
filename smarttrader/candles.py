@@ -104,9 +104,11 @@ def validate_frame(frame, now, minimum=20):
         raise MarketDataError('Invalid timeframe context') from None
 
 
-def validate_frames(frames,now):
-    if not isinstance(frames,dict) or set(frames)!=set(RESOLUTIONS):
-        raise MarketDataError('All three configured timeframes are required')
+def validate_frames(frames,now,required=None):
+    if required is None:
+        required=set(RESOLUTIONS)
+    if not isinstance(frames,dict) or set(frames)!=set(required):
+        raise MarketDataError('Configured timeframes are required')
     for resolution,frame in frames.items():
         if not isinstance(frame,dict) or frame.get('resolution')!=resolution:
             raise MarketDataError('Timeframe label mismatch')

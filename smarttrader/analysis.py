@@ -116,7 +116,12 @@ def validate_context(context, now, *, allow_missing_news=False):
     if 'timeframes' in context:
         from .candles import validate_frames, MarketDataError
         try:
-            validate_frames(context['timeframes'],now)
+            rules=context.get('strategy_policy')=='independent_hour_day_trends'
+            required=(context['timeframes'].keys() if rules else None)
+            if rules and ('MINUTE_15' not in context['timeframes']
+                          or set(context['timeframes'])-{'MINUTE_15','HOUR'}):
+                raise MarketDataError('Unsupported trend timeframes')
+            validate_frames(context['timeframes'],now,required=required)
         except MarketDataError as error:
             raise AnalysisError(str(error)) from None
     return ids

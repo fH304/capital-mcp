@@ -1,6 +1,6 @@
 """Connect Capital market observations to the OpenAI analysis input."""
 import time
-from .candles import RESOLUTIONS, normalize_candles, validate_frames
+from .candles import RESOLUTIONS, MarketDataError, normalize_candles, validate_frames
 from .analysis import validate_context
 from .coordinator import fresh
 
@@ -13,12 +13,29 @@ class MarketCollector:
         # Initial quote avoids historical requests for closed/restricted markets.
         quote_method=getattr(self.broker,'observation_quote',self.broker.market_quote)
         quote_method(epic)
-        histories={resolution:self.broker.prices(epic,resolution,40) for resolution in RESOLUTIONS}
+        rules=getattr(self,'rules_only',False)
+        if rules:
+            histories={'MINUTE_15':self.broker.prices(epic,'MINUTE_15',40)}
+            from .capital import CapitalError
+            try:
+                histories['HOUR']=self.broker.prices(epic,'HOUR',40)
+            except CapitalError:
+                pass  # The daily route can still proceed.
+        else:
+            histories={resolution:self.broker.prices(epic,resolution,40) for resolution in RESOLUTIONS}
         # Refresh executable quote AFTER all historical requests.
         quote=quote_method(epic)
         now=self.clock()
-        frames={resolution:normalize_candles(rows,resolution,now) for resolution,rows in histories.items()}
-        validate_frames(frames,now)
+        frames={'MINUTE_15':normalize_candles(histories['MINUTE_15'],'MINUTE_15',now)}
+        for resolution,rows in histories.items():
+            if resolution=='MINUTE_15':
+                continue
+            try:
+                frames[resolution]=normalize_candles(rows,resolution,now)
+            except MarketDataError:
+                if not rules or resolution!='HOUR':
+                    raise
+        validate_frames(frames,now,required=frames.keys() if rules else RESOLUTIONS)
         fresh(quote['quote_time'],now,30,'collected quote')
         # Reuse already-fetched executable sides for the read-only spread study.
         # They are kept outside the AI input, so its token/cost policy is unchanged.
@@ -30,21 +47,15 @@ class MarketCollector:
                      quote_currency=quote.get('quote_currency','USD'),
                      price_basis='candles are bid/ask midpoints; quote bid/ask are executable',
                      volume_basis='optional Capital lastTradedVolume; not asserted as global exchange volume')
-        
-    def attach_retest_history(self,context):
-        """Fetch daily and recent intraday candles only for the new core-market route."""
-        from .retest_strategy import stamp
+
+    def attach_trend_daily(self,context):
+        """Daily data is optional: H1 can execute if D1 is unavailable."""
+        from .trend_following import daily_candles
         from .capital import CapitalError
-        now=self.clock()
         try:
-            daily=self.broker.prices(context['epic'],'DAY',25)
-        except CapitalError:
-            return context
-        closed=sorted((row for row in daily if stamp(row)+86400<=now),key=stamp)
-        if len(closed)>=21:
-            hourly=self.broker.prices(context['epic'],'HOUR',40)
-            m15=self.broker.prices(context['epic'],'MINUTE_15',40)
-            context['retest_history']=dict(daily=closed,hourly=hourly,m15=m15)
+            context['trend_daily']=daily_candles(self.broker.prices(context['epic'],'DAY',40),self.clock())
+        except (CapitalError,MarketDataError):
+            context['trend_daily']=[]
         return context
 
     def collect(self,epic,articles):

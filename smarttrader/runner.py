@@ -112,7 +112,7 @@ class Config:
             raise ValueError('Technical entry policy is restricted to the approved demo trial')
         if self.decision_engine=='rules' and not self.technical_entries:
             raise ValueError('Rules engine requires the approved technical entry policy')
-        self.retest_only=self.decision_engine=='rules'
+        self.core_rules_only=self.decision_engine=='rules'
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
         if not isinstance(self.symbols,dict) or not 1<=len(self.symbols) or (not self.broad and len(self.symbols)>32):
@@ -209,7 +209,7 @@ class Worker:
             feed=dict(self.news_checks.get(context['epic'],{}))
         return dict(context,articles=articles,news_feed_healthy=feed.get('healthy',False),
                     news_checked_at=feed.get('checked_at'),entry_evidence_policy=self.config.entry_evidence,
-                    strategy_policy=('three_month_retest_only' if self.config.decision_engine=='rules'
+                    strategy_policy=('independent_hour_day_trends' if self.config.decision_engine=='rules'
                                      else 'legacy_ai'))
 
     def decision_fields(self,context,scoring):
@@ -238,6 +238,10 @@ class Worker:
     def observe_spread(self,context,scoring,bars=()):
         # New technical hypotheses are observational only. Their action is
         # never passed to the AI, the coordinator, or the broker.
+        if self.config.decision_engine=='rules':
+            self.emit('spread_metrics',epic=context['epic'],study_recorded=False,
+                      **self.spread_fields(scoring))
+            return
         context['desk_brief']=market_brief(context,self.clock())
         try:
             observed=self.institutional_study().observe(context,self.clock(),bars)
@@ -423,7 +427,10 @@ class Worker:
                       for a in sorted(self.articles.get(epic,[]),key=lambda x:timestamp(x['published_utc']),reverse=True)
                       if 0<=self.clock()-timestamp(a['published_utc'])<=21600][:5]
         collector=MarketCollector(broker,self.clock)
+        collector.rules_only=self.config.decision_engine=='rules'
         context=collector.collect_market(epic)
+        if collector.rules_only:
+            context=collector.attach_trend_daily(context)
         scoring=rank(context)
         self.observe_spread(context,scoring,getattr(collector,'execution_candles',()))
         if self.config.continuous:
@@ -433,16 +440,17 @@ class Worker:
     def broad_opportunities(self):
         broker,journal=self.resources()
         epics=([epic for epic in self.config.symbols if epic in MARKETS]
-               if self.config.retest_only else list(self.config.symbols))
+               if self.config.core_rules_only else list(self.config.symbols))
         epic=epics[self.rotation%len(epics)]
         self.rotation+=1
         observed=None
         try:
             collector=MarketCollector(broker,self.clock)
+            collector.rules_only=self.config.decision_engine=='rules'
             context=collector.collect_market(epic)
             if (self.config.decision_engine=='rules' and epic in MARKETS
-                    and hasattr(collector,'attach_retest_history')):
-                context=collector.attach_retest_history(context)
+                    and hasattr(collector,'attach_trend_daily')):
+                context=collector.attach_trend_daily(context)
             scoring=rank(context)
             self.observe_spread(context,scoring,getattr(collector,'execution_candles',()))
             self.candidates[epic]=dict(context=context,**scoring)
@@ -581,23 +589,43 @@ class Worker:
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal,recommendation=result)
 
     def rules_market(self,epic,context,scoring):
-        """One deterministic decision per closed candle, without paid AI/news calls."""
+        """Independent hourly and daily closed-candle routes, without paid AI."""
         now=self.clock()
         context=self.evidence_context(context,[])
         validate_context(context,now,allow_missing_news=True)
         if not hasattr(self.local,'schedule'):
             self.local.schedule=MarketSchedule(str(self.config.directory/'scans.sqlite'),
                                                self.config.account,self.config.analysis_interval)
-        candle=context['timeframes']['MINUTE_15']['candles'][-1]['t']
-        reservation=self.local.schedule.reserve(epic,candle,now)
-        if not reservation['reserved']:
+        from .trend_following import frame_setup
+        candidates=[frame_setup(context,route,now) for route in ('HOUR','DAY')]
+        selected=None
+        for candidate in candidates:
+            if not candidate['ready']:
+                continue
+            candle=candidate['signal_at']
+            key=epic+':'+candidate['route']
+            if self.local.schedule.reserve(key,candle,now)['reserved']:
+                selected=candidate
+                break
+        if selected is None:
+            candle=context['timeframes']['MINUTE_15']['candles'][-1]['t']
+            key=epic+':monitor'
+            if not self.local.schedule.reserve(key,candle,now)['reserved']:
+                return True
+            self.emit('rules_evaluated',epic=epic,candle=candle,ready=False,
+                      reason='no_new_trend_signal',hour_reason=candidates[0]['reason'],
+                      day_reason=candidates[1]['reason'],news_independent=True)
+            self.emit('entry_wait',epic=epic,reason='no_new_trend_signal')
+            self.local.schedule.finish(key,candle,'done')
             return True
+        context=dict(context,trend_route=selected['route'],trend_signal_at=candle)
         completed=False
         try:
             checked=technical_evidence(context,now,require_news_health=False)
             setup=active_setup(context,now)
             self.emit('rules_evaluated',epic=epic,candle=candle,ready=checked['ready'],
                       reason=checked['reason'],strategy=setup['strategy'],
+                      timeframe=selected['route'],
                       setup_reason=setup['reason'],rank_reason=scoring['reason'],
                       news_independent=True,technical_score=scoring['score'])
             if not checked['ready']:
@@ -613,12 +641,11 @@ class Worker:
             if self.config.risk_mode=='auto':
                 self.local.daily.activate(epic)
             state,reconciled=self.entry_state(broker,journal)
-            self.study_candidate(context,scoring,result)
             outcome=self.evaluate(epic,context,[],state,reconciled,broker,journal,recommendation=result)
             completed=True
             return outcome
         finally:
-            self.local.schedule.finish(epic,candle,'done' if completed else 'failed')
+            self.local.schedule.finish(key,candle,'done' if completed else 'failed')
 
     def evaluate(self,epic,context,articles,state,reconciled,broker,journal,recommendation=None):
         if not self.trial_active():
@@ -647,13 +674,17 @@ class Worker:
             self.emit('entry_blocked',epic=epic,reason='feed_or_daily_gate')
             return True
         context['articles']=articles
-        context['desk_brief']=market_brief(context,self.clock())
+        if self.config.decision_engine!='rules':
+            context['desk_brief']=market_brief(context,self.clock())
         validate_context(context,self.clock(),allow_missing_news=self.config.technical_entries)
         if recommendation is not None:
             if not self.trial_active():
                 return True
             with self.order_lock:
-                outcome=journal.process(str(context['timeframes']['MINUTE_15']['candles'][-1]['t']),
+                signal_id=(str(context['trend_route'])+':'+str(context['trend_signal_at'])
+                           if self.config.decision_engine=='rules' else
+                           str(context['timeframes']['MINUTE_15']['candles'][-1]['t']))
+                outcome=journal.process(signal_id,
                                         recommendation,context,broker,armed=self.config.armed)
             self.emit('entry_'+outcome['status'],epic=epic,**{k:v for k,v in outcome.items() if k!='status'})
             return True
@@ -727,7 +758,7 @@ def main():
         if args.once and config.armed:
             raise ValueError('--once is available in preview only')
         lock=WorkerLock(config.legacy+'.lock')
-        if config.broad and config.trial and config.decision_engine=='rules' and not config.retest_only:
+        if config.broad and config.trial and config.decision_engine=='rules' and not config.core_rules_only:
             # Discovery precedes risk-controller creation so its policy includes
             # every account-visible crypto market. Existing markets survive a
             # temporary catalogue failure; the failure is visible in logs.
@@ -754,8 +785,9 @@ def main():
             pair_risk_fraction=.0025 if config.max_positions==2 else .00125,
             entry_policy='staged_owned_same_pair' if config.max_positions==2 else 'flat_only',
             leverage_policy='broker_current_no_probability_increase',
-            analysis_framework=FRAMEWORK,strategy_research=STRATEGY,
-            strategy_execution='three_month_daily_retest_only_demo',
+            analysis_framework=FRAMEWORK,
+            strategy_research='disabled' if config.decision_engine=='rules' else STRATEGY,
+            strategy_execution='independent_hour_day_trends_demo',
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):

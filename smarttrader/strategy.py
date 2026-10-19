@@ -108,6 +108,9 @@ def range_setup(context, now):
 
 def active_setup(context, now):
     """Select the explicitly configured demo strategy."""
+    if context.get('strategy_policy') == 'independent_hour_day_trends':
+        from .trend_following import active_setup as trend_routes
+        return trend_routes(context,now)
     if context.get('strategy_policy') == 'three_month_retest_only':
         from .retest_strategy import live_setup
         return live_setup(context,now)

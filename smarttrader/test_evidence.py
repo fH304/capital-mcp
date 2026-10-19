@@ -180,7 +180,14 @@ class ActivationFlowTests(unittest.TestCase):
     def run_market(self,worker):
         from .marketdata import MarketCollector
         f=self.fixture
-        with patch.object(MarketCollector,'collect_market',lambda collector,epic:f.collect(collector,epic)):
+        def collect(collector,epic):
+            context=f.collect(collector,epic)
+            if worker.config.decision_engine=='rules':
+                context['timeframes'].pop('HOUR_4')
+                for bar in context['timeframes']['HOUR']['candles']:
+                    bar.update(o=1.02,c=1.02,h=1.022,l=1.018)
+            return context
+        with patch.object(MarketCollector,'collect_market',collect):
             worker.opportunities()
 
     def orders(self):
@@ -196,7 +203,7 @@ class ActivationFlowTests(unittest.TestCase):
         self.assertLessEqual(plan['planned_risk'],1.25)
         self.assertEqual(len(self.fixture.ai_calls),1)
 
-    def test_rules_ignore_legacy_trend_without_daily_retest(self):
+    def test_rules_wait_without_hourly_or_daily_trend(self):
         f=self.fixture
         f.env.update(SMART_DECISION_ENGINE='rules',OPENAI_API_KEY='',OPENAI_MODEL='',EODHD_API_KEY='')
         worker=f.make()
@@ -207,7 +214,7 @@ class ActivationFlowTests(unittest.TestCase):
         self.run_market(worker)
         self.assertEqual(len(self.orders()),0, f.events[-12:])
         self.assertEqual(f.ai_calls,[])
-        self.assertTrue(any(e=='rules_evaluated' and fields['reason']=='daily_retest_not_ready'
+        self.assertTrue(any(e=='rules_evaluated' and fields['reason']=='no_new_trend_signal'
                             for e,fields in f.events))
         self.run_market(worker)
         self.assertEqual(len(self.orders()),0)
@@ -219,13 +226,54 @@ class ActivationFlowTests(unittest.TestCase):
         from .marketdata import MarketCollector
         def no_setup(collector,epic):
             context=f.collect(collector,epic)
-            bars=context['timeframes']['MINUTE_15']['candles']
-            bars[-1]['c']=bars[-1]['o']
+            context['timeframes'].pop('HOUR_4')
+            for bar in context['timeframes']['HOUR']['candles']:
+                bar.update(o=1.02,c=1.02,h=1.022,l=1.018)
             return context
         with patch.object(MarketCollector,'collect_market',no_setup):
             worker.opportunities()
         self.assertEqual(self.orders(),[])
         self.assertTrue(any(e=='entry_wait' for e,_ in f.events))
+
+    def _assert_independent_trend_submits(self,route):
+        f=self.fixture
+        f.env.update(SMART_DECISION_ENGINE='rules',OPENAI_API_KEY='',OPENAI_MODEL='',EODHD_API_KEY='')
+        worker=f.make(); f.prime(worker)
+        from .marketdata import MarketCollector
+        def bars(seconds,count):
+            result=[]
+            for i in range(count):
+                p=1.06+(i if count==40 else i+10)*.001
+                result.append(dict(t=f.now-(count-i)*seconds,o=p,h=p+.0008,
+                                   l=p-.0008,c=p+.0004))
+            return result
+        def collect(collector,epic):
+            ctx=f.collect(collector,epic)
+            ctx['timeframes'].pop('HOUR_4')
+            ctx.update(bid=1.10,ask=1.101)
+            if route=='HOUR':
+                ctx['timeframes']['HOUR']['candles']=bars(3600,40)
+            else:
+                ctx['timeframes'].pop('HOUR')
+            return ctx
+        def daily(collector,ctx):
+            if route=='DAY':
+                ctx['trend_daily']=bars(86400,30)
+            return ctx
+        with patch.object(MarketCollector,'collect_market',collect),\
+             patch.object(MarketCollector,'attach_trend_daily',daily):
+            worker.opportunities()
+        self.assertEqual(len(self.orders()),1)
+        self.assertEqual(f.ai_calls,[])
+        self.assertTrue(any(e=='rules_evaluated' and fields.get('timeframe')==route and fields['ready']
+                            for e,fields in f.events))
+        self.assertTrue(any(e=='entry_confirmed' for e,_ in f.events))
+
+    def test_hour_trend_can_submit_with_no_daily_history(self):
+        self._assert_independent_trend_submits('HOUR')
+
+    def test_day_trend_can_submit_with_no_hour_history(self):
+        self._assert_independent_trend_submits('DAY')
 
     def test_wait_is_recorded_with_reason_and_does_not_send(self):
         worker=self.worker(action='WAIT')
