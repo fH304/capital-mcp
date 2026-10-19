@@ -54,8 +54,9 @@ class MarketCollector:
         from .capital import CapitalError
         try:
             context['trend_daily']=daily_candles(self.broker.prices(context['epic'],'DAY',40),self.clock())
-        except (CapitalError,MarketDataError):
+        except (CapitalError,MarketDataError) as error:
             context['trend_daily']=[]
+            context['trend_daily_issue']=type(error).__name__
         return context
 
     def collect(self,epic,articles):

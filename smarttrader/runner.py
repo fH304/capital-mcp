@@ -459,6 +459,8 @@ class Worker:
             self.emit('market_scanned',epic=epic,asset_class=MARKETS[epic][0] if epic in MARKETS else 'crypto',
                       score=scoring['score'],reason=scoring['reason'],
                       execution_supported=context['execution_supported'],quote_currency=context['quote_currency'],
+                      trend_daily_bars=len(context.get('trend_daily',[])),
+                      trend_daily_issue=context.get('trend_daily_issue'),
                       **self.spread_fields(scoring))
             observed=(context,scoring)
         except Exception as error:

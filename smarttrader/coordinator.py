@@ -60,6 +60,17 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
     # Replace old analysis prices after the model call; recheck reward/risk.
     current = dict(context, bid=snapshot.get('bid'), ask=snapshot.get('ask'),
                    quote_time=snapshot.get('quote_time'))
+    if current.get('strategy_policy') == 'independent_hour_day_trends' \
+            and recommendation['action'] in ('BUY','SELL'):
+        from .strategy import active_setup
+        refreshed = active_setup(current,now)
+        if not refreshed['ready'] or refreshed['direction'] != recommendation['action'] \
+                or refreshed.get('signal_at') != context.get('trend_signal_at'):
+            raise CoordinationError('Trend signal changed before submission')
+        # Target is defined by executable 2R. Rebase it at the fresh broker
+        # quote; never reuse a target calculated from an earlier spread.
+        recommendation = dict(recommendation,stop_level=refreshed['stop_level'],
+                              target_level=refreshed['target_level'])
     result = validate_recommendation(recommendation, current, now,
                                     allow_technical_entry=allow_technical_entry,
                                     allow_newsless_technical=allow_newsless_technical)

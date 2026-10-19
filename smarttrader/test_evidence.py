@@ -235,7 +235,7 @@ class ActivationFlowTests(unittest.TestCase):
         self.assertEqual(self.orders(),[])
         self.assertTrue(any(e=='entry_wait' for e,_ in f.events))
 
-    def _assert_independent_trend_submits(self,route):
+    def _assert_independent_trend_submits(self,route,initial_ask=1.101):
         f=self.fixture
         f.env.update(SMART_DECISION_ENGINE='rules',OPENAI_API_KEY='',OPENAI_MODEL='',EODHD_API_KEY='')
         worker=f.make(); f.prime(worker)
@@ -250,7 +250,7 @@ class ActivationFlowTests(unittest.TestCase):
         def collect(collector,epic):
             ctx=f.collect(collector,epic)
             ctx['timeframes'].pop('HOUR_4')
-            ctx.update(bid=1.10,ask=1.101)
+            ctx.update(bid=1.10,ask=initial_ask)
             if route=='HOUR':
                 ctx['timeframes']['HOUR']['candles']=bars(3600,40)
             else:
@@ -270,7 +270,7 @@ class ActivationFlowTests(unittest.TestCase):
         self.assertTrue(any(e=='entry_confirmed' for e,_ in f.events))
 
     def test_hour_trend_can_submit_with_no_daily_history(self):
-        self._assert_independent_trend_submits('HOUR')
+        self._assert_independent_trend_submits('HOUR',initial_ask=1.1001)
 
     def test_day_trend_can_submit_with_no_hour_history(self):
         self._assert_independent_trend_submits('DAY')
