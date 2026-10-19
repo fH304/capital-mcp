@@ -49,13 +49,15 @@ class RetestStrategyTest(unittest.TestCase):
         history[-1]['closePrice'] = {'bid': 11, 'ask': 11}
         self.assertEqual(daily_breakouts(history), [])
 
-    def test_cost_and_chase_checks_use_next_executable_open(self):
+    def test_spread_and_distance_do_not_veto_positive_protected_entry(self):
         setup = {'direction': 1, 'stop': 99, 'level': 100, 'atr_hour': 2}
         accepted = entry(setup, {'bid': 100.3, 'ask': 100.4})
         self.assertIsNotNone(accepted)
         self.assertAlmostEqual(accepted['target'], 103.2)
-        self.assertIsNone(entry(setup, {'bid': 100.1, 'ask': 100.5}))
-        self.assertIsNone(entry(setup, {'bid': 101.1, 'ask': 101.2}))
+        self.assertIsNotNone(entry(setup, {'bid': 100.1, 'ask': 100.5}))
+        self.assertIsNotNone(entry(setup, {'bid': 101.1, 'ask': 101.2}))
+        self.assertIsNone(entry(setup, {'bid': 98.8, 'ask': 98.9}))
+        self.assertIsNone(entry(setup, {'bid': 100.4, 'ask': 100.3}))
 
 
 if __name__ == '__main__':

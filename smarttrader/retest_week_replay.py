@@ -39,7 +39,7 @@ def replay(daily, intraday, *, start=START, end=END, initial=1000., notional=100
                     continue
                 trade = entry(candidate, opening['openPrice'])
                 if trade is None:
-                    counts['entry_cost_or_chase_rejected'] += 1
+                    counts['entry_invalid_rejected'] += 1
                     continue
                 signals.append(dict(epic=epic, opened_at=opening_at, breakout=breakout,
                                     **trade))

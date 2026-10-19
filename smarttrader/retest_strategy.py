@@ -72,14 +72,12 @@ def m15_confirmation(row, retest):
 
 
 def entry(retest, next_open, stress=0):
-    """Executable sides, stressed 2R target; 10% spread-to-stop cap."""
+    """Executable sides and positive stop distance; spread remains in sizing."""
     sign = retest['direction']
     price = next_open['ask' if sign == 1 else 'bid']
     spread = next_open['ask'] - next_open['bid']
     risk = sign * (price - retest['stop'])
-    if price <= 0 or risk <= 0 or spread < 0 or spread > .1 * risk:
-        return None
-    if sign * (price - retest['level']) > .5 * retest['atr_hour']:
+    if price <= 0 or risk <= 0 or spread < 0:
         return None
     return dict(direction=sign, entry=price, stop=retest['stop'],
                 target=price + sign * (2 * risk + 3 * stress + (risk * 1e-9 if stress else 0)),
@@ -114,7 +112,7 @@ def live_setup(context, now):
             stress=.1*retest['atr_hour']
             trade=entry(retest,context,stress=stress)
             if trade is None or trade['stop']<=0 or trade['target']<=0:
-                return dict(base,reason='daily_retest_cost_or_chase')
+                return dict(base,reason='daily_retest_invalid_executable_entry')
             return dict(base,ready=True,direction='BUY' if trade['direction']==1 else 'SELL',
                         reason='daily_breakout_hourly_retest_m15_confirmation',
                         invalidation_level=trade['stop'],target_ceiling=trade['target'],
