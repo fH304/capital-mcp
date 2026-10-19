@@ -13,7 +13,7 @@ from .test_capital import Transport,Response
 
 
 def rows(resolution):
-    duration=RESOLUTIONS[resolution]
+    duration=86400 if resolution=='DAY' else RESOLUTIONS[resolution]
     current=NOW//duration*duration
     result=[]
     for i in range(39,-1,-1):
@@ -119,6 +119,12 @@ class MarketTests(unittest.TestCase):
         for resolution,count in (('HOUR&max=1000',40),('HOUR',True),('HOUR',1000)):
             with self.assertRaises(CapitalError):
                 self.broker.prices('EURUSD',resolution,count)
+    def test_daily_history_is_allowed_for_independent_trend(self):
+        self.collector.rules_only=True
+        data=self.collector.collect_market('EURUSD')
+        self.collector.attach_trend_daily(data)
+        self.assertGreaterEqual(len(data['trend_daily']),21)
+        self.assertEqual(set(data['timeframes']),{'MINUTE_15','HOUR'})
     def test_slow_analysis_blocks_context(self):
         collector=MarketCollector(self.broker,clock=lambda:NOW)
         class Client:

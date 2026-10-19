@@ -77,7 +77,7 @@ class CapitalDemo:
                     or re.fullmatch(r'/(markets|positions|confirms)/[A-Za-z0-9_.:%-]+', path)))
         allowed = allowed or (method == 'POST' and path in {'/session', '/positions'})
         allowed = allowed or (method=='GET' and re.fullmatch(
-            r'/prices/[A-Za-z0-9_.:%-]+\?resolution=(MINUTE_15|HOUR|HOUR_4)&max=([1-9]|[1-3][0-9]|40)',path))
+            r'/prices/[A-Za-z0-9_.:%-]+\?resolution=(MINUTE_15|HOUR|HOUR_4|DAY)&max=([1-9]|[1-3][0-9]|40)',path))
         allowed = allowed or (method == 'DELETE' and self.armed and path == self._close_path)
         if not allowed:
             raise CapitalError('Endpoint outside adapter scope')
