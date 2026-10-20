@@ -19,6 +19,7 @@ from .trial import (APPROVED_ACCOUNT, AUTHORIZED_STARTED_AT, DURATION,
                     SECOND_BUDGET_INCREASE_AUTHORIZED_AT, SECOND_BUDGET_INCREASE_ID,
                     SECOND_INCREASED_LIMIT_NANO,
                     RULES_RENEWAL_AUTHORIZED_AT, RULES_RENEWAL_ENDS_AT,
+                    WEEK_RENEWAL_ID, WEEK_RENEWAL_AUTHORIZED_AT, WEEK_RENEWAL_ENDS_AT,
                     TrialBudget, TrialStopped)
 
 
@@ -40,6 +41,38 @@ class TrialExtensionTests(unittest.TestCase):
         budget = TrialBudget(self.path, APPROVED_ACCOUNT, self.now if now is None else now)
         self.addCleanup(budget.close)
         return budget
+
+    def test_additional_week_reopens_only_expired_verified_rules_trial(self):
+        self.seed(reason='duration_elapsed')
+        budget=self.budget(WEEK_RENEWAL_AUTHORIZED_AT)
+        with budget.db:
+            budget.db.execute('UPDATE trial_runs SET last_seen=?,stop_reason=?',
+                              (RULES_RENEWAL_ENDS_AT,'duration_elapsed'))
+        before=budget.status(WEEK_RENEWAL_AUTHORIZED_AT-1)
+        self.assertFalse(before['trial_active'])
+        after=budget.status(WEEK_RENEWAL_AUTHORIZED_AT)
+        self.assertTrue(after['trial_active'])
+        self.assertEqual(after['week_renewal_id'],WEEK_RENEWAL_ID)
+        self.assertEqual(after['authorized_ends_at'],WEEK_RENEWAL_ENDS_AT)
+        self.assertEqual(after['authorized_budget_usd'],30)
+        self.assertEqual(after['requests'],before['requests'])
+        self.assertEqual(budget.db.execute('SELECT limit_nano FROM trial_runs').fetchone()[0],LIMIT_NANO)
+        with self.assertRaisesRegex(TrialStopped,'rules_only_renewal'):
+            budget.reserve('GOLD',MODEL,WEEK_RENEWAL_AUTHORIZED_AT)
+        self.assertEqual(budget.status(WEEK_RENEWAL_ENDS_AT)['stop_reason'],'duration_elapsed')
+
+    def test_additional_week_does_not_lift_budget_or_ledger_failure(self):
+        for reason in ('budget_exhausted','trial_ledger_replaced','usage_unverified'):
+            with self.subTest(reason=reason):
+                self.path=Path(self.tmp.name)/(reason+'.sqlite')
+                self.seed(reason=reason)
+                budget=self.budget(WEEK_RENEWAL_AUTHORIZED_AT)
+                if reason=='budget_exhausted':
+                    with budget.db:
+                        budget.db.execute('INSERT INTO trial_calls VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL)',
+                            ('spent',TRIAL_ID,APPROVED_ACCOUNT,'GOLD',self.now,
+                             SECOND_INCREASED_LIMIT_NANO,SECOND_INCREASED_LIMIT_NANO))
+                self.assertEqual(budget.status(WEEK_RENEWAL_AUTHORIZED_AT)['stop_reason'],reason)
 
     def test_rules_only_renewal_preserves_ledger_and_expires_after_monday(self):
         self.seed(reason='duration_elapsed')

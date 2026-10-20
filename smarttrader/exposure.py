@@ -1,7 +1,7 @@
-"""Two staged demo entries share one conservative risk and margin allowance.
+"""Journal-owned demo positions share conservative risk and margin allowances.
 
-This is an exposure rule, not a probability model. It never changes leverage.
-All open positions must belong to the journal and to the same market/direction.
+The legacy two-leg policy is same-market and same-direction; the portfolio
+policy has no numeric count limit. Neither policy changes leverage.
 """
 from decimal import Decimal
 
@@ -11,6 +11,7 @@ from .sizing import decimal
 TRADE_FRACTION = Decimal('0.00125')
 PAIR_FRACTION = Decimal('0.0025')
 MARGIN_FRACTION = Decimal('0.1')
+PORTFOLIO_ENTRY_FRACTION = Decimal('0.0005')
 
 
 class ExposureError(ValueError):
@@ -101,3 +102,81 @@ def entry_limits(data, owned, *, direction, assessment, candle):
                 daily_remaining_risk=float(min(daily, pair_limit)),
                 margin_fraction=float(margin_budget/available),
                 existing_positions=len(positions))
+
+
+def portfolio_entry_limits(data, owned, *, candle, now):
+    """No fixed position count; reserve every owned position across markets.
+
+    The aggregate 0.25% equity and 10% free-margin ceilings remain in place.
+    Quotes, conversions and contract factors for *each* existing market must
+    come from a fresh authenticated broker snapshot; missing evidence blocks.
+    """
+    equity, available = value(data, 'equity'), value(data, 'free_margin')
+    daily = value(data, 'daily_remaining_risk', True)
+    positions, quotes = data.get('positions'), data.get('position_quotes')
+    if (data.get('hedging_mode') is not True or not isinstance(positions, list)
+            or not isinstance(quotes, dict) or data.get('working_orders') != []):
+        raise ExposureError('Unverified portfolio positions or hedging mode')
+    if type(candle) not in (int, float) or type(now) not in (int, float):
+        raise ExposureError('A fresh closed entry candle is required')
+    decimal(candle, 'candle', True)
+    ids = [item.get('position', {}).get('dealId') for item in positions]
+    if (not isinstance(owned, dict) or any(not isinstance(x, str) or not x for x in ids)
+            or len(ids) != len(set(ids)) or set(ids) != set(owned)
+            or set(ids) != set(quotes)):
+        raise ExposureError('Unknown or changed portfolio ownership')
+    baseline, open_risk, open_margin = equity, Decimal(0), Decimal(0)
+    components = []
+    for item in positions:
+        pos, market = item['position'], item['market']
+        plan, quote = owned[pos['dealId']], quotes[pos['dealId']]
+        if (market.get('epic') != plan.get('epic') or quote.get('epic') != plan.get('epic')
+                or pos.get('direction') != plan.get('direction')
+                or pos.get('size') != plan.get('size')
+                or pos.get('currency') != plan.get('quote_currency')
+                or quote.get('quote_currency') != plan.get('quote_currency')
+                or pos.get('contractSize') != 1
+                or pos.get('stopLevel') != plan.get('stop_level')
+                or pos.get('profitLevel') != plan.get('target_level')
+                or pos.get('leverage') != plan.get('leverage')):
+            raise ExposureError('Existing position identity or protection changed')
+        stamp = value(quote, 'quote_time', True)
+        conversion_stamp = value(quote, 'conversion_time', True)
+        if (not 0 <= Decimal(str(now)) - stamp <= 30
+                or not 0 <= Decimal(str(now)) - conversion_stamp <= 30):
+            raise ExposureError('Stale portfolio market quote or conversion')
+        if decimal(candle, 'candle', True) <= value(plan, 'signal_candle', True) \
+                and plan['epic'] == data.get('epic'):
+            raise ExposureError('Same market requires a later closed candle')
+        bid, ask = value(quote, 'bid'), value(quote, 'ask')
+        fx, margin_fx = value(quote, 'quote_to_account'), value(quote, 'fx_rate')
+        if ask < bid:
+            raise ExposureError('Invalid portfolio executable spread')
+        size, fill, stop = value(pos, 'size'), value(pos, 'level'), value(pos, 'stopLevel')
+        leverage = value(pos, 'leverage')
+        factor = max(value(quote, 'margin_factor'), value(plan, 'margin_factor'), Decimal(1)/leverage)
+        conversion = max(fx, value(plan, 'quote_to_account'))
+        distance = max(fill-stop, bid-stop) if pos['direction']=='BUY' else max(stop-fill, stop-ask)
+        if distance <= 0:
+            raise ExposureError('Invalid existing stop distance')
+        risk = max(value(plan, 'planned_risk'), value(plan, 'actual_risk'), size*distance*conversion)
+        margin = max(value(plan, 'required_margin'), value(plan, 'actual_margin'),
+                     size*max(fill,ask)*factor*margin_fx)
+        baseline = min(baseline, value(plan, 'group_equity'))
+        open_risk += risk
+        open_margin += margin
+        components.append(dict(risk=float(risk),margin=float(margin),
+                               quote_currency=pos['currency'],quote_to_account=float(fx),fx_rate=float(margin_fx)))
+    cap = baseline*PAIR_FRACTION
+    risk_budget = min(equity*PORTFOLIO_ENTRY_FRACTION, cap-open_risk, daily-open_risk)
+    margin_limit = available*MARGIN_FRACTION
+    margin_budget = margin_limit-open_margin
+    if risk_budget <= 0 or margin_budget <= 0:
+        raise ExposureError('No remaining combined risk or margin allowance')
+    return dict(group_equity=float(baseline), portfolio_risk_limit=float(cap),
+                existing_risk=float(open_risk), existing_margin=float(open_margin),
+                risk_budget=float(risk_budget), margin_budget=float(margin_budget),
+                group_margin_limit=float(margin_limit),
+                daily_remaining_risk=float(min(daily,cap)),
+                margin_fraction=float(margin_budget/available),
+                existing_positions=len(positions),existing_components=components)

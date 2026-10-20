@@ -18,7 +18,7 @@ from urllib.request import Request, build_opener
 from .coordinator import CoordinationError, EntryPreflightBlocked, fresh
 from .fx import ROUTES, conversion
 from .news import NoRedirect
-from .exposure import entry_limits, ExposureError
+from .exposure import entry_limits, portfolio_entry_limits, ExposureError
 
 BASE = 'https://demo-api-capital.backend-capital.com/api/v1'
 TYPES = {'CURRENCIES', 'COMMODITIES', 'INDICES', 'CRYPTOCURRENCIES'}
@@ -67,7 +67,7 @@ class CapitalDemo:
         self.max_positions, self.ownership = 1, None
 
     def configure_entries(self, max_positions, ownership):
-        if type(max_positions) is not int or max_positions not in (1, 2) or not callable(ownership):
+        if type(max_positions) is not int or max_positions not in (0, 1, 2) or not callable(ownership):
             raise CapitalError('Invalid journal-backed entry policy')
         self.max_positions, self.ownership = max_positions, ownership
 
@@ -302,7 +302,7 @@ class CapitalDemo:
                 if margin > 1:
                     raise CapitalError('Invalid margin factor')
                 preferences = {}
-                if self.max_positions == 2:
+                if self.max_positions != 1:
                     prefs = self.get('/accounts/preferences')
                     settings = prefs['leverages'][ins['type']]
                     leverage = number(settings['current'], True)
@@ -313,6 +313,32 @@ class CapitalDemo:
                             or margin + 1e-9 < 1/leverage):
                         raise CapitalError('Unverified hedging or leverage/margin convention')
                     preferences = dict(hedging_mode=True, leverage=leverage)
+                if self.max_positions == 0:
+                    # Each existing contract gets its own fresh broker quote,
+                    # currency conversion and margin factor. Reusing the new
+                    # candidate's prices for other markets understates risk.
+                    position_quotes = {}
+                    for item in positions:
+                        pos, held = item['position'], item['market']
+                        identifier(pos['dealId'])
+                        held_epic = held['epic']
+                        identifier(held_epic)
+                        if held_epic == epic:
+                            old_quote = dict(epic=epic,bid=bid,ask=ask,quote_time=quote_time,
+                                             quote_currency=ins['currency'],instrument_type=ins['type'])
+                            old_ins = ins
+                        else:
+                            old_market = self.get('/markets/'+identifier(held_epic))
+                            old_quote = self._quote(old_market,held['epic'])
+                            old_ins = old_market['instrument']
+                        held_factor = number(old_ins['marginFactor'],True)/100
+                        if (old_ins['marginFactorUnit']!='PERCENTAGE' or held_factor>1
+                                or number(pos['leverage'],True)<1
+                                or pos['currency']!=old_quote['quote_currency']):
+                            raise CapitalError('Unverified existing portfolio contract')
+                        old_fx=self._conversion(old_quote['quote_currency'],seed=old_quote,refresh=False)
+                        position_quotes[pos['dealId']]=dict(old_quote,margin_factor=held_factor,**old_fx)
+                    preferences['position_quotes']=position_quotes
                 def size_rule(name):
                     if rules[name]['unit'] != 'POINTS':
                         raise CapitalError('Unverified size rule unit')
@@ -344,7 +370,7 @@ class CapitalDemo:
             if not self.armed or not self.prepared or self.pending:
                 raise CapitalError('Adapter is unarmed or order reconciliation required')
             self.verify_session()
-            if self.max_positions == 2:
+            if self.max_positions != 1:
                 # Refresh account, actual legs, FX, contract and preferences
                 # after the journal reservation and before the order mutation.
                 self.snapshot(plan['epic'])
@@ -354,11 +380,11 @@ class CapitalDemo:
                 raise CapitalError('Prepared account or market mismatch')
             if (not data['tradeable'] or data['daily_stopped'] or data['working_orders']
                     or (self.max_positions == 1 and data['positions'])):
-                if self.max_positions == 2:
+                if self.max_positions != 1:
                     raise EntryPreflightBlocked('account_gate_changed_before_submission')
                 raise CapitalError('Prepared account entry gate is closed')
             limits = None
-            if self.max_positions == 2:
+            if self.max_positions != 1:
                 limits = self._pair_limits(data, plan)
                 if plan.get('leverage') != data['leverage']:
                     raise EntryPreflightBlocked('leverage_changed_before_submission')
@@ -384,7 +410,7 @@ class CapitalDemo:
                 raise CapitalError('Unknown distance rule')
             low, high = distance_rule('minStopOrProfitDistance'), distance_rule('maxStopOrProfitDistance')
             if not low <= loss <= high or not low <= reward <= high or reward < 2*loss:
-                if self.max_positions == 2:
+                if self.max_positions != 1:
                     raise EntryPreflightBlocked('protection_or_reward_risk_changed_before_submission')
                 raise CapitalError('Broker protection or reward/risk limits failed')
             budget = min(data['equity']*.00125, data['daily_remaining_risk'])
@@ -393,7 +419,7 @@ class CapitalDemo:
                 budget, margin_budget = limits['risk_budget'], limits['margin_budget']
             if (size*loss*data['quote_to_account'] > budget+1e-9
                     or size*data['margin_per_unit'] > margin_budget+1e-9):
-                if self.max_positions == 2:
+                if self.max_positions != 1:
                     raise EntryPreflightBlocked('combined_risk_or_margin_changed_before_submission')
                 raise CapitalError('Risk or margin budget exceeded')
             payload = dict(epic=plan['epic'], direction=direction, size=size,
@@ -410,12 +436,19 @@ class CapitalDemo:
             if limits is not None:
                 self.pending[reference].update(_existing_risk=limits['existing_risk'],
                                                _existing_margin=limits['existing_margin'],
-                                               _pair_risk_cap=min(limits['pair_risk_limit'],data['daily_remaining_risk']),
+                                               _pair_risk_cap=min(limits.get('portfolio_risk_limit',
+                                                                           limits.get('pair_risk_limit')),
+                                                                  data['daily_remaining_risk']),
                                                _group_margin_cap=limits['group_margin_limit'])
+                if self.max_positions == 0:
+                    self.pending[reference]['_existing_components']=limits['existing_components']
             return reference
 
     def _pair_limits(self, data, plan):
         try:
+            if self.max_positions == 0:
+                return portfolio_entry_limits(data,self.ownership(),
+                                              candle=plan.get('signal_candle'),now=self.clock())
             return entry_limits(data, self.ownership(), direction=plan.get('direction'),
                                 assessment=plan.get('assessment'), candle=plan.get('signal_candle'))
         except (ExposureError, ValueError, KeyError, TypeError):
@@ -423,7 +456,7 @@ class CapitalDemo:
 
     def _submission_fresh(self, data, plan):
         self._entry_fresh(data)
-        if self.max_positions == 2:
+        if self.max_positions != 1:
             self._pair_limits(data, plan)
 
     def confirm_entry(self, reference):
@@ -459,12 +492,19 @@ class CapitalDemo:
                         or fill_risk<=0 or fill_reward<2*fill_risk
                         or risk>expected['_risk_cap']+1e-9 or margin>expected['_margin_cap']+1e-9):
                     raise CapitalError('Actual position differs from reserved order')
-                if self.max_positions == 2:
+                if self.max_positions != 1:
                     if number(pos.get('leverage'), True) != expected['leverage']:
                         raise CapitalError('Actual leverage differs from reserved entry')
                     result['leverage'] = pos['leverage']
-                    existing_risk=expected['_existing_risk']*max(1,fx['quote_to_account']/expected['_conversion'])
-                    existing_margin=expected['_existing_margin']*max(1,fx['fx_rate']/expected['_fx_rate'])
+                    if self.max_positions == 0:
+                        existing_risk=existing_margin=0
+                        for component in expected['_existing_components']:
+                            old_fx=self._conversion(component['quote_currency'])
+                            existing_risk+=component['risk']*max(1,old_fx['quote_to_account']/component['quote_to_account'])
+                            existing_margin+=component['margin']*max(1,old_fx['fx_rate']/component['fx_rate'])
+                    else:
+                        existing_risk=expected['_existing_risk']*max(1,fx['quote_to_account']/expected['_conversion'])
+                        existing_margin=expected['_existing_margin']*max(1,fx['fx_rate']/expected['_fx_rate'])
                     if (existing_risk+risk>expected['_pair_risk_cap']+1e-9
                             or existing_margin+margin>expected['_group_margin_cap']+1e-9):
                         raise CapitalError('Actual combined risk or margin exceeded')

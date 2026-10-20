@@ -1,8 +1,9 @@
 # Staged demo entries
 
-`SMART_PAIR_ENTRIES=2` permits at most two journal-owned positions, on one
-market and in one direction. The authorized demo trial defaults to this mode;
-other accounts retain the flat-account default (`SMART_PAIR_ENTRIES=1`).
+`SMART_PAIR_ENTRIES=2` preserves the older staged policy: at most two
+journal-owned positions, on one market and in one direction. The approved demo
+trial now defaults to `SMART_PAIR_ENTRIES=0` (no numerical position cap); see
+`PORTFOLIO_ENTRIES.md`. Other accounts retain the flat-account default (`1`).
 
 Each entry keeps the 0.125% equity risk ceiling. Both positions share a 0.25%
 group ceiling, using the lower of current equity and the original group equity.

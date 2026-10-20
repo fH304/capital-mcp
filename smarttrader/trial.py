@@ -39,6 +39,12 @@ EXTENDED_ENDS_AT = 1792180800.0
 RULES_RENEWAL_ID = '2026-10-17-rules-only-through-monday-dubai'
 RULES_RENEWAL_AUTHORIZED_AT = 1792230174.0
 RULES_RENEWAL_ENDS_AT = 1792440000.0
+# Authorized 2026-10-20: seven additional days on the same demo account.
+# The original ledger and $30 total ceiling are preserved. End is exclusive:
+# 2026-10-27 00:00 Asia/Dubai (2026-10-26 20:00 UTC).
+WEEK_RENEWAL_ID = '2026-10-20-rules-only-seven-more-days'
+WEEK_RENEWAL_AUTHORIZED_AT = 1792510437.0
+WEEK_RENEWAL_ENDS_AT = RULES_RENEWAL_ENDS_AT + 7 * 86400
 LIMIT_NANO = 20 * 1_000_000_000
 # User authorized $25 TOTAL on 2026-10-15, not a fresh trial or $25 extra.
 BUDGET_INCREASE_ID = '2026-10-15-total-25usd-through-friday'
@@ -126,7 +132,10 @@ class TrialBudget:
                                 and now >= EXTENSION_AUTHORIZED_AT)
         rules_renewal_authorized = (extension_authorized and identity_ok
                                     and now >= RULES_RENEWAL_AUTHORIZED_AT)
-        authorized_end = (RULES_RENEWAL_ENDS_AT if rules_renewal_authorized else
+        week_renewal_authorized = (rules_renewal_authorized
+                                   and now >= WEEK_RENEWAL_AUTHORIZED_AT)
+        authorized_end = (WEEK_RENEWAL_ENDS_AT if week_renewal_authorized else
+                          RULES_RENEWAL_ENDS_AT if rules_renewal_authorized else
                           EXTENDED_ENDS_AT if extension_authorized
                           else AUTHORIZED_STARTED_AT+DURATION)
         increase_authorized = (identity_ok and extension_authorized
@@ -200,6 +209,10 @@ class TrialBudget:
             result.update(rules_renewal_id=RULES_RENEWAL_ID,
                           rules_renewal_authorized_at=RULES_RENEWAL_AUTHORIZED_AT,
                           prior_ends_at=EXTENDED_ENDS_AT)
+        if week_renewal_authorized:
+            result.update(week_renewal_id=WEEK_RENEWAL_ID,
+                          week_renewal_authorized_at=WEEK_RENEWAL_AUTHORIZED_AT,
+                          previous_ends_at=RULES_RENEWAL_ENDS_AT)
         if checkpoint:
             result.update(accounted_usd_scope='provider_checkpoint_plus_local',
                           history_complete=False,budget_evidence='matched_provider_exports',

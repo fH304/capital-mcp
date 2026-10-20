@@ -80,11 +80,12 @@ class Config:
             raise ValueError('Rules engine requires the approved demo trial')
         if self.decision_engine=='ai' and not all((self.ai_key,self.model,self.news_key)):
             raise ValueError('Missing AI or news configuration')
-        # Two staged legs were explicitly authorized for this demo account.
+        # Zero removes the numerical cap only for the approved demo trial.
+        # Broker minimums and portfolio risk/margin ceilings still apply.
         self.max_positions=int(env.get('SMART_PAIR_ENTRIES',
-                                       '2' if self.trial and is_approved_account(self.account) else '1'))
-        if self.max_positions not in (1,2):
-            raise ValueError('SMART_PAIR_ENTRIES must be 1 or 2')
+                                       '0' if self.trial and is_approved_account(self.account) else '1'))
+        if self.max_positions not in (0,1,2) or (self.max_positions==0 and not self.trial):
+            raise ValueError('SMART_PAIR_ENTRIES must be 1, 2, or 0 for the approved demo trial')
         self.analysis_mode=env.get('SMART_ANALYSIS_MODE','budgeted')
         if self.analysis_mode not in {'continuous','budgeted'}:
             raise ValueError('Invalid analysis mode')
@@ -379,9 +380,9 @@ class Worker:
         if (state['working_orders'] or reconciled['unresolved']
                 or reconciled['unknown'] or reconciled['changed']):
             return 'account_ownership_or_order_review'
-        if len(state['positions'])>=self.config.max_positions:
+        if self.config.max_positions and len(state['positions'])>=self.config.max_positions:
             return 'pair_position_limit'
-        if any(plan['epic']!=epic for plan in reconciled['owned'].values()):
+        if self.config.max_positions==2 and any(plan['epic']!=epic for plan in reconciled['owned'].values()):
             return 'other_pair_open'
         return None
 
@@ -783,9 +784,10 @@ def main():
             entry_evidence_policy=config.entry_evidence,
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
             spread_study='observe_only_historical_threshold_comparison',spread_policy=SPREAD_POLICY,
-            pair_entries=config.max_positions,
-            pair_risk_fraction=.0025 if config.max_positions==2 else .00125,
-            entry_policy='staged_owned_same_pair' if config.max_positions==2 else 'flat_only',
+            pair_entries=config.max_positions if config.max_positions else None,
+            pair_risk_fraction=.0025 if config.max_positions!=1 else .00125,
+            entry_policy=('journal_owned_portfolio_no_count_limit' if config.max_positions==0 else
+                          'staged_owned_same_pair' if config.max_positions==2 else 'flat_only'),
             leverage_policy='broker_current_no_probability_increase',
             analysis_framework=FRAMEWORK,
             strategy_research='disabled' if config.decision_engine=='rules' else STRATEGY,

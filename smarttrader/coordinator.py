@@ -12,7 +12,8 @@ from pathlib import Path
 
 from .analysis import validate_recommendation
 from .policy import assessed_size
-from .exposure import entry_limits, ExposureError
+from .sizing import size_position
+from .exposure import entry_limits, portfolio_entry_limits, ExposureError
 from .trial import TrialEntryBlocked, is_approved_account
 
 
@@ -53,7 +54,7 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
         fresh(snapshot.get('conversion_time'),now,30,'currency conversion')
     if snapshot.get('tradeable') is not True or snapshot.get('daily_stopped') is not False:
         raise CoordinationError('Market or daily entry gate is closed')
-    if max_positions not in (1, 2):
+    if max_positions not in (0, 1, 2):
         raise CoordinationError('Invalid position policy')
     if max_positions == 1 and (snapshot.get('positions') != [] or snapshot.get('working_orders') != []):
         raise CoordinationError('Account must be reconciled and empty before entry')
@@ -107,8 +108,22 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
         inputs.update(open_risk=limits['existing_risk'],
                       daily_remaining_risk=limits['daily_remaining_risk'],
                       portfolio_fraction='0.0025', margin_fraction=limits['margin_fraction'])
-    sizing = assessed_size(assessment=result['assessment'], validation_passed=False,
-                           stop_distance=distance, spread=ask-bid, **inputs)
+    elif max_positions == 0:
+        try:
+            candle = context['timeframes']['MINUTE_15']['candles'][-1]['t']
+            fresh(candle+900, now, 900, 'closed entry candle')
+            limits = portfolio_entry_limits(snapshot,owned,candle=candle,now=now)
+        except (KeyError, IndexError, TypeError, ExposureError, ValueError) as error:
+            raise PairEntryBlocked(str(error)) from None
+        inputs.update(open_risk=limits['existing_risk'],
+                      daily_remaining_risk=limits['daily_remaining_risk'],
+                      risk_fraction='0.0005',portfolio_fraction='0.0025',
+                      margin_fraction=limits['margin_fraction'])
+    if max_positions == 0:
+        sizing = size_position(stop_distance=distance, spread=ask-bid, **inputs)
+    else:
+        sizing = assessed_size(assessment=result['assessment'], validation_passed=False,
+                               stop_distance=distance, spread=ask-bid, **inputs)
     plan = {'account_id': str(snapshot['account_id']), 'epic': current['epic'],
             'direction': result['action'], 'size': sizing['size'],
             'stop_level': result['stop_level'], 'target_level': result['target_level'],
@@ -125,7 +140,7 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
                 'conversion_time','conversion_fee_buffer'):
         if key in snapshot:
             plan[key]=snapshot[key]
-    if limits is not None:
+    if limits is not None and max_positions == 2:
         plan.update(group_equity=limits['group_equity'], pair_risk_limit=limits['pair_risk_limit'],
                     existing_risk=limits['existing_risk'], existing_margin=limits['existing_margin'],
                     combined_planned_risk=limits['existing_risk']+plan['planned_risk'],
@@ -133,6 +148,15 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
                     pair_position_limit=2, signal_candle=candle, assessment=result['assessment'],
                     leverage=snapshot['leverage'], margin_factor=snapshot['margin_factor'],
                     confidence_basis='assessment_not_probability')
+    elif limits is not None:
+        plan.update(group_equity=limits['group_equity'],
+                    portfolio_risk_limit=limits['portfolio_risk_limit'],
+                    existing_risk=limits['existing_risk'], existing_margin=limits['existing_margin'],
+                    combined_planned_risk=limits['existing_risk']+plan['planned_risk'],
+                    combined_required_margin=limits['existing_margin']+plan['required_margin'],
+                    signal_candle=candle, assessment=result['assessment'],
+                    leverage=snapshot['leverage'], margin_factor=snapshot['margin_factor'],
+                    entry_policy='journal_owned_portfolio_no_count_limit')
     return plan
 
 
@@ -146,7 +170,7 @@ class DemoCoordinator:
     """
     def __init__(self, path, account_id, max_positions=1, *, allow_technical_entry=False,
                  allow_newsless_technical=False):
-        if type(max_positions) is not int or max_positions not in (1, 2):
+        if type(max_positions) is not int or max_positions not in (0, 1, 2):
             raise CoordinationError('Invalid position policy')
         self.max_positions = max_positions
         self.account_id = str(account_id)
@@ -182,7 +206,7 @@ class DemoCoordinator:
         now = time.time() if now is None else now
         if str(snapshot.get('account_id')) != self.account_id:
             raise CoordinationError('Snapshot account mismatch')
-        if self.max_positions == 2:
+        if self.max_positions != 1:
             if self.unresolved():
                 raise CoordinationError('Account ownership or order review required')
             # Monitoring reconciles closures separately. Do not mark a newly
@@ -209,11 +233,11 @@ class DemoCoordinator:
             if self.db.execute("SELECT 1 FROM smart_entries WHERE account=? AND status IN ('pending','uncertain')",
                                (self.account_id,)).fetchone():
                 raise CoordinationError('Unresolved order; broker reconciliation required')
-            if self.max_positions == 2:
+            if self.max_positions != 1:
                 # Another client must not use a pre-reservation snapshot after
                 # an order has been confirmed on the shared journal.
                 plan = plan_entry(recommendation, context, snapshot, now,
-                                  owned=self.owned(), max_positions=2,
+                                  owned=self.owned(), max_positions=self.max_positions,
                                   allow_technical_entry=self.allow_technical_entry,
                                   allow_newsless_technical=self.allow_newsless_technical)
             self.db.execute('INSERT INTO smart_entries (signal,account,status,plan) VALUES (?,?,?,?)',
@@ -242,7 +266,7 @@ class DemoCoordinator:
             for key in ('actual_risk','actual_margin'):
                 if key in confirmation:
                     plan[key]=confirmation[key]
-            if self.max_positions == 2:
+            if self.max_positions != 1:
                 if confirmation.get('leverage') != plan['leverage']:
                     raise CoordinationError('Confirmed leverage differs from reserved entry')
                 for key in ('existing_risk','existing_margin'):

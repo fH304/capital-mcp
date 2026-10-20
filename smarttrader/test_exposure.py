@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from .capital import BASE, CapitalDemo, CapitalError
 from .coordinator import CoordinationError, DemoCoordinator
-from .exposure import entry_limits, ExposureError
+from .exposure import entry_limits, portfolio_entry_limits, ExposureError
 from .runner import Config, Worker
 from .test_analysis import NOW, context, recommendation
 from .test_capital import Response
@@ -424,11 +424,127 @@ class PairWorkerTests(unittest.TestCase):
                 for name in ('journal','daily','spread_study'):
                     obj=getattr(w.local,name,None)
                     if obj: obj.close()
-    def test_configuration_refuses_more_than_two_and_preserves_other_account_default(self):
+    def test_configuration_unlimited_mode_is_restricted_to_approved_demo_trial(self):
         env=dict(BOT_ACCOUNT_ID='demo-1',CAP_API_KEY='private',CAP_IDENTIFIER='private',CAP_API_PASSWORD='private',
                  OPENAI_API_KEY='private',OPENAI_MODEL='fixture',EODHD_API_KEY='private')
         self.assertEqual(Config(env).max_positions,1)
         with patch('smarttrader.runner.is_approved_account',return_value=True):
-            self.assertEqual(Config(dict(env,SMART_MARKETS='broad')).max_positions,2)
-        for value in ('0','3','200','bad'):
+            self.assertEqual(Config(dict(env,SMART_MARKETS='broad')).max_positions,0)
+        for value in ('3','200','bad'):
             with self.assertRaises(ValueError): Config(dict(env,SMART_PAIR_ENTRIES=value))
+        with self.assertRaises(ValueError): Config(dict(env,SMART_PAIR_ENTRIES='0'))
+
+
+class PortfolioEntryTests(unittest.TestCase):
+    def setUp(self):
+        self.data=data()
+        self.data.update(epic='GBPUSD',bid=1.10,ask=1.101,positions=[],position_quotes={})
+        self.owned={}
+
+    def add(self,deal,epic='EURUSD'):
+        plan,actual=leg()
+        plan.update(epic=epic,size=10,planned_risk=.1,actual_risk=.1,
+                    margin_factor=.005,required_margin=.055,actual_margin=.055)
+        actual['position'].update(dealId=deal,size=10)
+        actual['market']['epic']=epic
+        self.data['positions'].append(actual)
+        self.data['position_quotes'][deal]=dict(epic=epic,quote_currency='USD',bid=1.101,
+            ask=1.102,quote_time=NOW,conversion_time=NOW,quote_to_account=1,fx_rate=1,
+            margin_factor=.005)
+        self.owned[deal]=plan
+
+    def limits(self):
+        return portfolio_entry_limits(self.data,self.owned,candle=NOW-900,now=NOW)
+
+    def test_three_distinct_markets_have_no_numerical_position_limit(self):
+        for deal,epic in enumerate(('EURUSD','SILVER','GOLD')):
+            self.add(str(deal),epic)
+        limits=self.limits()
+        self.assertEqual(limits['existing_positions'],3)
+        self.assertAlmostEqual(limits['risk_budget'],.5)
+        self.assertLessEqual(limits['existing_risk'],2.5)
+
+    def test_combined_risk_and_margin_still_veto_and_unknown_owner_blocks(self):
+        for deal in range(3): self.add(str(deal))
+        self.data['daily_remaining_risk']=.2
+        with self.assertRaises(ExposureError): self.limits()
+        self.data['daily_remaining_risk']=20
+        self.data['free_margin']=.1
+        with self.assertRaises(ExposureError): self.limits()
+        self.data['free_margin']=1000
+        self.owned.pop('0')
+        with self.assertRaises(ExposureError): self.limits()
+
+    def test_missing_stale_quote_or_changed_stop_blocks(self):
+        self.add('old')
+        self.data['position_quotes']['old']['quote_time']=NOW-31
+        with self.assertRaises(ExposureError): self.limits()
+        self.data['position_quotes']['old']['quote_time']=NOW
+        self.data['positions'][0]['position']['stopLevel']=1.08
+        with self.assertRaises(ExposureError): self.limits()
+
+    def test_unlimited_adapter_can_confirm_three_owned_positions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clock=[NOW]
+            transport=PairTransport(lambda:clock[0])
+            journal=DemoCoordinator(folder+'/orders.sqlite','demo-1',0)
+            broker=CapitalDemo(key='private',user='private',password='private',account_id='demo-1',
+                daily_controller=lambda e,t:dict(stopped=False,remaining=20),armed=True,
+                opener=transport,clock=lambda:clock[0],sleep=lambda _:None)
+            broker.configure_entries(0,journal.owned)
+            broker.login()
+            try:
+                for _ in range(3):
+                    c=dict(trending(),**context())
+                    c.update(bid=transport.market['snapshot']['bid'],
+                             ask=transport.market['snapshot']['offer'],quote_time=clock[0],
+                             collected_at=clock[0],quote_currency='USD')
+                    for frame in c['timeframes'].values():
+                        for bar in frame['candles']: bar['t']+=clock[0]-NOW
+                    candle=c['timeframes']['MINUTE_15']['candles'][-1]['t']
+                    outcome=journal.process(str(candle),recommendation(),c,broker,now=clock[0],armed=True)
+                    self.assertEqual(outcome['status'],'confirmed',outcome)
+                    clock[0]+=900
+                    transport.market['snapshot']['updateTimeUTC']=datetime.fromtimestamp(
+                        clock[0],timezone.utc).isoformat()
+                self.assertEqual(len(journal.owned()),3)
+                self.assertLessEqual(sum(p['actual_risk'] for p in journal.owned().values()),2.5)
+            finally:
+                journal.close()
+
+    def test_adapter_uses_other_market_quote_before_next_order(self):
+        class MultiMarketTransport(PairTransport):
+            def __call__(self,request,timeout):
+                if request.full_url.endswith('/markets/GBPUSD'):
+                    self.calls.append((request.get_method(),request.full_url,request.data))
+                    market=copy.deepcopy(self.market)
+                    market['instrument']['epic']='GBPUSD'
+                    market['snapshot']['updateTimeUTC']=datetime.fromtimestamp(
+                        self.clock(),timezone.utc).isoformat()
+                    return Response(market)
+                return super().__call__(request,timeout)
+        with tempfile.TemporaryDirectory() as folder:
+            clock=[NOW]
+            transport=MultiMarketTransport(lambda:clock[0])
+            journal=DemoCoordinator(folder+'/orders.sqlite','demo-1',0)
+            broker=CapitalDemo(key='private',user='private',password='private',account_id='demo-1',
+                daily_controller=lambda e,t:dict(stopped=False,remaining=20),armed=True,
+                opener=transport,clock=lambda:clock[0],sleep=lambda _:None)
+            broker.configure_entries(0,journal.owned)
+            broker.login()
+            try:
+                for epic in ('EURUSD','GBPUSD'):
+                    c=dict(trending(),**context())
+                    c.update(epic=epic,quote_time=clock[0],collected_at=clock[0],quote_currency='USD')
+                    for frame in c['timeframes'].values():
+                        for bar in frame['candles']: bar['t']+=clock[0]-NOW
+                    candle=c['timeframes']['MINUTE_15']['candles'][-1]['t']
+                    result=journal.process(str(candle),recommendation(),c,broker,now=clock[0],armed=True)
+                    self.assertEqual(result['status'],'confirmed',result)
+                    clock[0]+=900
+                    transport.market['snapshot']['updateTimeUTC']=datetime.fromtimestamp(
+                        clock[0],timezone.utc).isoformat()
+                self.assertEqual({p['epic'] for p in journal.owned().values()},
+                                 {'EURUSD','GBPUSD'})
+            finally:
+                journal.close()
