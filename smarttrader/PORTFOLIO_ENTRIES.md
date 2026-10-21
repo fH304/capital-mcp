@@ -13,9 +13,11 @@ position's current equity-to-stop downside is reserved alongside its original
 planned and actual fill loss, taking the larger amount. The portfolio shares
 the previous **0.25% of equity** loss allowance, while each new entry uses at
 most **0.05%**; combined estimated margin is bounded by **10% of current free
-margin**. Existing daily loss controls, stop/target checks and broker minimum
+margin**. Existing daily loss controls, broker stop checks and broker minimum
 sizes remain in effect. There is no guarantee that a third trade can fit: the
 broker's minimum size or the remaining portfolio allowance can prevent it.
+New H1/D1 trades have no fixed take-profit order; the watcher closes them on
+confirmed reversal of their original timeframe while retaining the broker stop.
 
 The demo trial was explicitly extended on 2026-10-20 for seven days from its
 prior deadline. It ends at 2026-10-27 00:00 Asia/Dubai (exclusive). Its

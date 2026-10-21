@@ -68,8 +68,7 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
         if not refreshed['ready'] or refreshed['direction'] != recommendation['action'] \
                 or refreshed.get('signal_at') != context.get('trend_signal_at'):
             raise CoordinationError('Trend signal changed before submission')
-        # Target is defined by executable 2R. Rebase it at the fresh broker
-        # quote; never reuse a target calculated from an earlier spread.
+        # Refresh the broker stop from the original signal's candles and route.
         recommendation = dict(recommendation,stop_level=refreshed['stop_level'],
                               target_level=refreshed['target_level'])
     result = validate_recommendation(recommendation, current, now,
@@ -124,9 +123,12 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
     else:
         sizing = assessed_size(assessment=result['assessment'], validation_passed=False,
                                stop_distance=distance, spread=ask-bid, **inputs)
+    no_target = (current.get('strategy_policy') == 'independent_hour_day_trends'
+                 and result['target_level'] == 0)
     plan = {'account_id': str(snapshot['account_id']), 'epic': current['epic'],
             'direction': result['action'], 'size': sizing['size'],
-            'stop_level': result['stop_level'], 'target_level': result['target_level'],
+            'stop_level': result['stop_level'],
+            'target_level': None if no_target else result['target_level'],
             'planned_risk': sizing['planned_risk'], 'required_margin': sizing['required_margin'],
             'reason': result['reason'], 'article_ids': list(result['article_ids'])}
     if setup:
@@ -135,6 +137,9 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
         plan['setup_reason']=setup['reason']
         plan['invalidation_level']=setup['invalidation_level']
         plan['target_basis']=setup['target_basis']
+        if no_target:
+            plan['trend_route']=context['trend_route']
+            plan['trend_signal_at']=context['trend_signal_at']
     plan['evidence_basis'] = 'news_articles' if context['articles'] else 'validated_closed_candles'
     for key in ('account_currency','quote_currency','fx_epic','fx_rate','quote_to_account',
                 'conversion_time','conversion_fee_buffer'):
@@ -329,8 +334,12 @@ class DemoCoordinator:
             raise CoordinationError('Close ownership or account mismatch')
         if armed is not True:
             return dict(status='close_preview',deal_id=deal,reason=reason)
-        if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached'}:
+        if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached','confirmed_trend_reversal'}:
             raise CoordinationError('Exit evidence is not independently validated')
+        if reason == 'confirmed_trend_reversal' and (
+                plan.get('target_level') is not None or plan.get('trend_route') not in ('HOUR','DAY')
+                or type(plan.get('trend_signal_at')) not in (int,float)):
+            raise CoordinationError('No recorded trend exit policy for owned position')
         self.db.execute('BEGIN IMMEDIATE')
         try:
             if self.db.execute('SELECT 1 FROM smart_exits WHERE deal=?',(deal,)).fetchone():

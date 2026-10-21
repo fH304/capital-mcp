@@ -1,6 +1,6 @@
 import unittest
 
-from .trend_following import POLICY, active_setup, frame_setup, daily_candles
+from .trend_following import POLICY, active_setup, frame_setup, daily_candles, reversal_exit
 from .test_analysis import NOW
 from .test_strategy import setup_context
 from .analysis import validate_context
@@ -49,6 +49,20 @@ class IndependentTrendTests(unittest.TestCase):
         self.assertTrue(day['ready'])
         self.assertEqual((hour['direction'],day['direction']),('BUY','SELL'))
         self.assertNotEqual(hour['signal_at'],day['signal_at'])
+
+    def test_reversal_requires_new_complete_opposite_candle_on_original_route(self):
+        prior = bars(3600,40,NOW,falling=True)
+        self.assertTrue(reversal_exit(prior,'HOUR','BUY',prior[-2]['t'],NOW))
+        self.assertFalse(reversal_exit(prior,'HOUR','BUY',prior[-1]['t'],NOW))
+        self.assertFalse(reversal_exit(prior,'HOUR','SELL',prior[-2]['t'],NOW))
+        self.assertFalse(reversal_exit(prior,'DAY','BUY',prior[-2]['t'],NOW))
+        bullish = bars(86400,30,NOW)
+        self.assertTrue(reversal_exit(bullish,'DAY','SELL',bullish[-2]['t'],NOW))
+        # Weekend/session gaps are real; they must not hold a losing trend
+        # position for five extra trading days while its broker stop remains.
+        for candle in bullish[:-4]:
+            candle['t'] -= 2*86400
+        self.assertTrue(reversal_exit(bullish,'DAY','SELL',bullish[-2]['t'],NOW))
 
     def test_open_day_is_discarded(self):
         from datetime import datetime,timezone

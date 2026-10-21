@@ -69,7 +69,7 @@ class Transport:
             p = self.position
             data = dict(position=dict(dealId='deal-1',currency='USD',contractSize=1,
                                       direction=p['direction'],size=p['size'],level=self.fill,leverage=200,
-                                      stopLevel=None if self.stop_missing else p['stopLevel'],profitLevel=p['profitLevel']),
+                                      stopLevel=None if self.stop_missing else p['stopLevel'],profitLevel=p.get('profitLevel')),
                         market=dict(epic=p['epic']))
         else:
             raise AssertionError('Unexpected request '+path)

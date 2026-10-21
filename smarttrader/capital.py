@@ -397,9 +397,15 @@ class CapitalDemo:
             if direction not in ('BUY', 'SELL'):
                 raise CapitalError('Invalid direction')
             entry = data['ask'] if direction=='BUY' else data['bid']
-            stop, target = number(plan['stop_level'], True), number(plan['target_level'], True)
+            stop = number(plan['stop_level'], True)
+            target = (None if plan['target_level'] is None else number(plan['target_level'], True))
+            if target is None and (plan.get('target_basis') != 'confirmed_same_frame_reversal_no_take_profit'
+                    or plan.get('trend_route') not in ('HOUR','DAY')
+                    or type(plan.get('trend_signal_at')) not in (int,float)
+                    or not math.isfinite(plan['trend_signal_at'])):
+                raise CapitalError('Unverified trend exit policy')
             loss = entry-stop if direction=='BUY' else stop-entry
-            reward = target-entry if direction=='BUY' else entry-target
+            reward = (target-entry if direction=='BUY' else entry-target) if target is not None else None
             def distance_rule(name):
                 rule = rules[name]
                 v = number(rule['value'], True)
@@ -409,7 +415,8 @@ class CapitalDemo:
                     return entry*v/100
                 raise CapitalError('Unknown distance rule')
             low, high = distance_rule('minStopOrProfitDistance'), distance_rule('maxStopOrProfitDistance')
-            if not low <= loss <= high or not low <= reward <= high or reward < 2*loss:
+            if not low <= loss <= high or (target is not None and
+                    (not low <= reward <= high or reward < 2*loss)):
                 if self.max_positions != 1:
                     raise EntryPreflightBlocked('protection_or_reward_risk_changed_before_submission')
                 raise CapitalError('Broker protection or reward/risk limits failed')
@@ -423,7 +430,9 @@ class CapitalDemo:
                     raise EntryPreflightBlocked('combined_risk_or_margin_changed_before_submission')
                 raise CapitalError('Risk or margin budget exceeded')
             payload = dict(epic=plan['epic'], direction=direction, size=size,
-                           stopLevel=stop, profitLevel=target, guaranteedStop=False)
+                           stopLevel=stop, guaranteedStop=False)
+            if target is not None:
+                payload['profitLevel'] = target
             self.prepared = None  # consume even when the transport fails
             result = self._request('POST', '/positions', payload,
                                    preflight=lambda:self._submission_fresh(data, plan))[0]
@@ -479,17 +488,20 @@ class CapitalDemo:
                 pos, market = actual['position'], actual['market']
                 result = dict(status='confirmed', account_id=self.expected_account, deal_id=deal,
                               epic=market['epic'], direction=pos['direction'], size=number(pos['size'], True),
-                              stop_level=number(pos['stopLevel'], True), target_level=number(pos['profitLevel'], True))
+                              stop_level=number(pos['stopLevel'], True),
+                              target_level=(None if pos.get('profitLevel') is None
+                                            else number(pos['profitLevel'], True)))
                 expected = self.pending[reference]
                 fx=self._conversion(expected['_quote_currency'])
                 fill = number(pos['level'], True)
                 fill_risk = fill-result['stop_level'] if result['direction']=='BUY' else result['stop_level']-fill
-                fill_reward = result['target_level']-fill if result['direction']=='BUY' else fill-result['target_level']
+                fill_reward = (result['target_level']-fill if result['direction']=='BUY'
+                               else fill-result['target_level']) if result['target_level'] is not None else None
                 risk=fill_risk*result['size']*max(fx['quote_to_account'],expected['_conversion'])
                 margin=fill*result['size']*expected['_margin_factor']*max(fx['fx_rate'],expected['_fx_rate'])
                 if (pos['dealId'] != deal or pos['currency']!=expected['_quote_currency'] or number(pos['contractSize'])!=1
                         or any(result[k] != expected[k] for k in ('account_id','epic','direction','size','stop_level','target_level'))
-                        or fill_risk<=0 or fill_reward<2*fill_risk
+                        or fill_risk<=0 or (fill_reward is not None and fill_reward<2*fill_risk)
                         or risk>expected['_risk_cap']+1e-9 or margin>expected['_margin_cap']+1e-9):
                     raise CapitalError('Actual position differs from reserved order')
                 if self.max_positions != 1:

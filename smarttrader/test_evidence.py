@@ -265,15 +265,67 @@ class ActivationFlowTests(unittest.TestCase):
             worker.opportunities()
         self.assertEqual(len(self.orders()),1)
         self.assertEqual(f.ai_calls,[])
+        order=json.loads(self.orders()[0][2])
+        self.assertIn('stopLevel',order)
+        self.assertNotIn('profitLevel',order)
+        plan=next(iter(worker.local.journal.owned().values()))
+        self.assertEqual(plan['trend_route'],route)
+        self.assertIsNone(plan['target_level'])
+        self.assertEqual(plan['trend_signal_at'],f.now-(3600 if route=='HOUR' else 86400))
         self.assertTrue(any(e=='rules_evaluated' and fields.get('timeframe')==route and fields['ready']
                             for e,fields in f.events))
         self.assertTrue(any(e=='entry_confirmed' for e,_ in f.events))
+        return worker
 
     def test_hour_trend_can_submit_with_no_daily_history(self):
         self._assert_independent_trend_submits('HOUR',initial_ask=1.1001)
 
     def test_day_trend_can_submit_with_no_hour_history(self):
         self._assert_independent_trend_submits('DAY')
+
+    def test_owned_hour_position_exits_once_on_confirmed_hour_reversal(self):
+        from datetime import datetime,timezone
+        worker=self._assert_independent_trend_submits('HOUR',initial_ask=1.1001)
+        f=self.fixture
+        f.now+=3600
+        def raw_rows():
+            rows=[]
+            for i in range(40):
+                price=1.2-i*.002
+                def side(value): return dict(bid=value,ask=value+.0001)
+                rows.append(dict(snapshotTimeUTC=datetime.fromtimestamp(
+                    f.now-(40-i)*3600,timezone.utc).isoformat(),
+                    openPrice=side(price),highPrice=side(price+.0008),
+                    lowPrice=side(price-.0008),closePrice=side(price-.0004)))
+            return rows
+        broker=worker.local.broker
+        quote=dict(bid=1.10,ask=1.1001,quote_time=f.now,quote_currency='USD')
+        with patch.object(broker,'market_quote',return_value=quote),\
+             patch.object(broker,'prices',return_value=raw_rows()) as prices:
+            self.assertTrue(worker.positions())
+            self.assertTrue(f.transport.closed)
+            self.assertEqual(prices.call_args.args[1],'HOUR')
+            worker.positions()
+        self.assertEqual(sum(method=='DELETE' for method,_,_ in f.transport.calls),1)
+        self.assertTrue(any(e=='closed' and fields['reason']=='confirmed_trend_reversal'
+                            for e,fields in f.events))
+
+    def test_trend_feed_failure_keeps_broker_stop_active(self):
+        from .capital import CapitalError
+        worker=self._assert_independent_trend_submits('HOUR',initial_ask=1.1001)
+        f=self.fixture; f.now+=3600
+        broker=worker.local.broker
+        quote=dict(bid=1.10,ask=1.1001,quote_time=f.now,quote_currency='USD')
+        with patch.object(broker,'market_quote',return_value=quote),\
+             patch.object(broker,'prices',side_effect=CapitalError('Price history unavailable')):
+            self.assertTrue(worker.positions())
+            self.assertFalse(f.transport.closed)
+            self.assertTrue(any(e=='trend_exit_unavailable' for e,_ in f.events))
+            f.transport.stop_missing=True
+            self.assertTrue(worker.positions())
+        self.assertTrue(f.transport.closed)
+        self.assertTrue(any(e=='closed' and fields['reason']=='missing_broker_stop'
+                            for e,fields in f.events))
 
     def test_wait_is_recorded_with_reason_and_does_not_send(self):
         worker=self.worker(action='WAIT')

@@ -157,6 +157,8 @@ def validate_recommendation(result, context, now, *, allow_missing_news=False,
     if action == 'CLOSE' and not context.get('owned_position'):
         raise AnalysisError('Cannot close an unowned or absent position')
     if action in ('BUY', 'SELL'):
+        no_target = (allow_technical_entry and context.get('strategy_policy') == 'independent_hour_day_trends'
+                     and result['target_level'] == 0)
         if allow_technical_entry:
             from .strategy import active_setup, accepts_levels
             setup=active_setup(context,now)
@@ -166,14 +168,14 @@ def validate_recommendation(result, context, now, *, allow_missing_news=False,
         bid, ask = context['bid'], context['ask']
         stop, target = result['stop_level'], result['target_level']
         if action == 'BUY':
-            if not 0 < stop < bid <= ask < target:
+            if not 0 < stop < bid <= ask or (not no_target and target <= ask):
                 raise AnalysisError('Invalid BUY protection')
             risk, reward = ask-stop, target-ask
         else:
-            if not 0 < target < bid <= ask < stop:
+            if not 0 < bid <= ask < stop or (not no_target and not 0 < target < bid):
                 raise AnalysisError('Invalid SELL protection')
             risk, reward = stop-bid, bid-target
-        if reward < 2*risk:
+        if not no_target and reward < 2*risk:
             raise AnalysisError('Reward/risk below minimum')
     return result
 

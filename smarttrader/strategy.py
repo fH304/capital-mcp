@@ -70,6 +70,9 @@ def accepts_levels(setup, action, stop, target, bid, ask):
     sign = 1 if action == 'BUY' else -1
     entry = ask if action == 'BUY' else bid
     risk, reward = sign*(entry-stop), sign*(target-entry)
+    if setup['strategy'] in ('hour_trend_v1','day_trend_v1'):
+        return (target == 0 and risk > 0
+                and abs(stop-setup['invalidation_level']) <= 1e-12)
     stress = setup['slippage_stress_distance']
     return (risk > 0 and sign*(setup['invalidation_level']-stop) >= -1e-12
             and sign*(setup['target_ceiling']-target) >= -1e-12

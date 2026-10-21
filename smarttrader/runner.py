@@ -23,6 +23,8 @@ from .universe import MARKETS, SPREAD_POLICY, relevant_articles, rank
 from .schedule import MarketSchedule
 from .spreadstudy import SpreadStudy
 from .strategy import active_setup
+from .candles import MarketDataError
+from .trend_following import trend_candles, reversal_exit
 from .strategy_study import StrategyStudy
 from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
 from .trial import (is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped,
@@ -165,6 +167,7 @@ class Worker:
         self.ai_factory,self.news_factory=ai_factory,news_factory
         self.rotation=0
         self.candidates={}
+        self.trend_exit_probe={}
         self.trial_stop_logged=False
         if config.trial:
             original_emit=self.emit
@@ -331,6 +334,8 @@ class Worker:
         state=broker.account_state()
         previously_owned=journal.owned() if self.config.trial else {}
         reconciled=journal.reconcile(state)
+        for deal in set(self.trend_exit_probe)-set(reconciled['owned']):
+            self.trend_exit_probe.pop(deal,None)
         if self.config.trial:
             actual_ids={item['position']['dealId'] for item in state['positions']}
             for deal in previously_owned.keys()-actual_ids:
@@ -355,6 +360,14 @@ class Worker:
             view=PositionView(deal,True,pos['direction'],pos['stopLevel'] if protected else plan['stop_level'],
                               quote['bid'],quote['ask'],quote['quote_time'],True,protected)
             decision=exit_decision(view,self.clock(),state['daily']['stopped'])
+            if decision['action']=='hold' and plan.get('target_level') is None:
+                try:
+                    if self.trend_reversed(broker,deal,plan,pos['direction']):
+                        decision=dict(action='close_intent',reason='confirmed_trend_reversal')
+                except (CapitalError,MarketDataError,ValueError,KeyError,TypeError) as error:
+                    self.trend_exit_probe[deal]=self.clock()+60
+                    self.emit('trend_exit_unavailable',deal_id=deal,epic=plan['epic'],
+                              error_type=type(error).__name__)
             if decision['action']=='close_intent':
                 result=journal.close_position(deal,decision['reason'],broker,armed=self.config.armed)
                 self.emit(result['status'],deal_id=deal,reason=decision['reason'])
@@ -370,6 +383,24 @@ class Worker:
             self.emit('trial_status',**self.trial_budget().status(self.clock()))
             self.trial_active()
         return usable
+
+    def trend_reversed(self,broker,deal,plan,direction):
+        """Read the owned entry route only, after its next closed candle."""
+        now=self.clock()
+        if now < self.trend_exit_probe.get(deal,0):
+            return False
+        route=plan['trend_route']
+        duration={'HOUR':3600,'DAY':86400}[route]
+        rows=broker.prices(plan['epic'],route,40)
+        bars=trend_candles(rows,route,now)
+        if not bars:
+            raise MarketDataError('No completed trend exit candle')
+        latest=bars[-1]['t']
+        reversed_=reversal_exit(bars,route,direction,plan['trend_signal_at'],now)
+        self.trend_exit_probe[deal]=max(now+30,latest+2*duration+2)
+        self.emit('trend_exit_checked',deal_id=deal,epic=plan['epic'],
+                  route=route,candle=latest,reversed=reversed_)
+        return reversed_
 
     def entry_state(self,broker,journal):
         with self.order_lock:
