@@ -104,13 +104,15 @@ def entry_limits(data, owned, *, direction, assessment, candle):
                 existing_positions=len(positions))
 
 
-def portfolio_entry_limits(data, owned, *, candle, now):
+def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, risk_multiplier=1):
     """No fixed position count; reserve every owned position across markets.
 
     The aggregate 0.25% equity and 10% free-margin ceilings remain in place.
     Quotes, conversions and contract factors for *each* existing market must
     come from a fresh authenticated broker snapshot; missing evidence blocks.
     """
+    if risk_multiplier not in (1, 5) or (risk_multiplier == 5 and hourly_direction not in ('BUY','SELL')):
+        raise ExposureError('Invalid portfolio risk policy')
     equity, available = value(data, 'equity'), value(data, 'free_margin')
     daily = value(data, 'daily_remaining_risk', True)
     positions, quotes = data.get('positions'), data.get('position_quotes')
@@ -147,7 +149,14 @@ def portfolio_entry_limits(data, owned, *, candle, now):
             raise ExposureError('Stale portfolio market quote or conversion')
         if decimal(candle, 'candle', True) <= value(plan, 'signal_candle', True) \
                 and plan['epic'] == data.get('epic'):
-            raise ExposureError('Same market requires a later closed candle')
+            # A single opposite leg of the same hourly hedge may share its
+            # hour. No third leg and no old-trend position can use the carveout.
+            matching = [p for p in owned.values() if p['epic'] == plan['epic']]
+            if not (hourly_direction and len(matching) == 1
+                    and plan.get('strategy') == 'hourly_hedge_v1'
+                    and plan.get('hour_start') == candle
+                    and plan['direction'] != hourly_direction):
+                raise ExposureError('Same market requires a later closed candle')
         bid, ask = value(quote, 'bid'), value(quote, 'ask')
         fx, margin_fx = value(quote, 'quote_to_account'), value(quote, 'fx_rate')
         if ask < bid:
@@ -167,8 +176,9 @@ def portfolio_entry_limits(data, owned, *, candle, now):
         open_margin += margin
         components.append(dict(risk=float(risk),margin=float(margin),
                                quote_currency=pos['currency'],quote_to_account=float(fx),fx_rate=float(margin_fx)))
-    cap = baseline*PAIR_FRACTION
-    risk_budget = min(equity*PORTFOLIO_ENTRY_FRACTION, cap-open_risk, daily-open_risk)
+    cap = baseline*PAIR_FRACTION*risk_multiplier
+    risk_budget = min(equity*PORTFOLIO_ENTRY_FRACTION*risk_multiplier,
+                      cap-open_risk, daily-open_risk)
     margin_limit = available*MARGIN_FRACTION
     margin_budget = margin_limit-open_margin
     if risk_budget <= 0 or margin_budget <= 0:

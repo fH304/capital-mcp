@@ -152,6 +152,7 @@ class ActivationFlowTests(unittest.TestCase):
     def setUp(self):
         self.fixture=trial_fixture.TrialWorkerTests()
         self.fixture.setUp()
+        self.fixture.env['SMART_RULES_STRATEGY']='trend'
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
 

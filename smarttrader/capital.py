@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, build_opener
@@ -154,6 +154,16 @@ class CapitalDemo:
         if not epics:
             raise CapitalError('No cryptocurrency markets in broker catalogue')
         return sorted(epics)
+
+    def available_hourly_epics(self):
+        """Account-visible metals and FX containing USD, JPY, GBP or NZD."""
+        from .hourly_hedge import market_epics
+        self.verify_session()
+        markets=self.get('/markets').get('markets')
+        epics=market_epics(markets)
+        if not epics:
+            raise CapitalError('No eligible hourly markets in account catalogue')
+        return epics
 
     def verify_session(self):
         session = self.get('/session')
@@ -357,6 +367,7 @@ class CapitalDemo:
                             tradeable=(daily.get('ready',True) is True and snap['marketStatus']=='TRADEABLE' and 'REGULAR' in snap['marketModes']
                                        and number(snap['delayTime'])==0),
                             point_value=1, margin_factor=margin, margin_per_unit=ask*margin*fx['fx_rate'],
+                            tick_size=number(snap.get('tickSize',snap['scalingFactor']),True),
                             min_size=size_rule('minDealSize'), size_step=size_rule('minSizeIncrement'),
                             max_size=size_rule('maxDealSize'), open_risk=0, **fx)
                 data.update(preferences)
@@ -364,6 +375,29 @@ class CapitalDemo:
                 raise CapitalError('Incomplete or invalid broker snapshot') from None
             self.prepared = (data, rules)
             return dict(data)
+
+    def hourly_stop(self, snapshot, direction):
+        """Quote-aligned, non-guaranteed broker minimum protective stop."""
+        if not self.prepared or self.prepared[0]['epic']!=snapshot.get('epic') \
+                or direction not in ('BUY','SELL'):
+            raise CapitalError('Unprepared hourly market')
+        data,rules=self.prepared
+        entry=data['ask'] if direction=='BUY' else data['bid']
+        rule=rules['minStopOrProfitDistance']
+        minimum=number(rule['value'],True)
+        if rule['unit']=='PERCENTAGE':
+            minimum=entry*minimum/100
+        elif rule['unit']!='POINTS':
+            raise CapitalError('Unsupported stop rule')
+        tick=number(snapshot['tick_size'],True)
+        distance=max(minimum+2*tick,2*(data['ask']-data['bid'])+tick)
+        raw=Decimal(str(entry + (distance if direction=='SELL' else -distance)))
+        increment=Decimal(str(tick))
+        rounding=ROUND_CEILING if direction=='SELL' else ROUND_FLOOR
+        stop=(raw/increment).to_integral_value(rounding=rounding)*increment
+        if stop<=0:
+            raise CapitalError('No positive protective stop')
+        return float(stop)
 
     def submit_entry(self, plan):
         with self.lock:
@@ -399,10 +433,17 @@ class CapitalDemo:
             entry = data['ask'] if direction=='BUY' else data['bid']
             stop = number(plan['stop_level'], True)
             target = (None if plan['target_level'] is None else number(plan['target_level'], True))
-            if target is None and (plan.get('target_basis') != 'confirmed_same_frame_reversal_no_take_profit'
-                    or plan.get('trend_route') not in ('HOUR','DAY')
-                    or type(plan.get('trend_signal_at')) not in (int,float)
-                    or not math.isfinite(plan['trend_signal_at'])):
+            trend_exit=(plan.get('target_basis')=='confirmed_same_frame_reversal_no_take_profit'
+                        and plan.get('trend_route') in ('HOUR','DAY')
+                        and type(plan.get('trend_signal_at')) in (int,float)
+                        and math.isfinite(plan['trend_signal_at']))
+            hourly_exit=(plan.get('target_basis')=='hourly_usd_profit_or_hour_end'
+                         and plan.get('strategy')=='hourly_hedge_v1'
+                         and type(plan.get('hour_start')) is int
+                         and plan['hour_start'] == int(self.clock()//3600)*3600)
+            if plan.get('strategy')=='hourly_hedge_v1' and not hourly_exit:
+                raise EntryPreflightBlocked('hourly_window_changed_before_submission')
+            if target is None and not (trend_exit or hourly_exit):
                 raise CapitalError('Unverified trend exit policy')
             loss = entry-stop if direction=='BUY' else stop-entry
             reward = (target-entry if direction=='BUY' else entry-target) if target is not None else None
@@ -457,7 +498,9 @@ class CapitalDemo:
         try:
             if self.max_positions == 0:
                 return portfolio_entry_limits(data,self.ownership(),
-                                              candle=plan.get('signal_candle'),now=self.clock())
+                                              candle=plan.get('signal_candle'),now=self.clock(),
+                                              hourly_direction=(plan['direction'] if plan.get('strategy')=='hourly_hedge_v1' else None),
+                                              risk_multiplier=(5 if plan.get('strategy')=='hourly_hedge_v1' else 1))
             return entry_limits(data, self.ownership(), direction=plan.get('direction'),
                                 assessment=plan.get('assessment'), candle=plan.get('signal_candle'))
         except (ExposureError, ValueError, KeyError, TypeError):
@@ -465,6 +508,8 @@ class CapitalDemo:
 
     def _submission_fresh(self, data, plan):
         self._entry_fresh(data)
+        if plan.get('strategy')=='hourly_hedge_v1' and plan.get('hour_start')!=int(self.clock()//3600)*3600:
+            raise EntryPreflightBlocked('hourly_window_changed_before_submission')
         if self.max_positions != 1:
             self._pair_limits(data, plan)
 

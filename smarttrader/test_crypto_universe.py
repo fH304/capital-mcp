@@ -26,7 +26,7 @@ class CryptoUniverseTests(unittest.TestCase):
         with patch('smarttrader.trial.ACCOUNT_SHA256',hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
             config=Config(dict(BOT_ACCOUNT_ID=APPROVED_ACCOUNT,CAP_API_KEY='k',
                                CAP_IDENTIFIER='u',CAP_API_PASSWORD='p',SMART_MARKETS='broad',
-                               SMART_DECISION_ENGINE='rules'))
+                               SMART_DECISION_ENGINE='rules',SMART_RULES_STRATEGY='trend'))
         original=set(config.symbols)
         added=config.add_crypto_markets(['BTCUSD']+[f'COIN{i}USD' for i in range(50)])
         self.assertEqual(added,50)

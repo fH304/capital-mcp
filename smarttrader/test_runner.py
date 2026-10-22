@@ -117,18 +117,18 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(sum(m=='DELETE' for m,_,_ in self.transport.calls),1)
         self.assertIn('closed',[e for e,_ in self.events])
     @patch('time.time',return_value=NOW)
-    def test_close_timeout_persists_and_blocks_after_restart(self,_):
+    def test_close_timeout_reconciles_absent_deal_after_restart_without_resend(self,_):
         w=self.make(True)
         self.cycle(w)
         self.transport.stop_missing=self.transport.close_fail=True
         with self.assertRaises(CoordinationError):
             w.positions()
         restarted=self.make(True)
-        self.assertFalse(restarted.positions())
-        self.assertTrue(restarted.local.journal.unresolved())
+        self.assertTrue(restarted.positions())
+        self.assertFalse(restarted.local.journal.unresolved())
         self.assertEqual(sum(m=='DELETE' for m,_,_ in self.transport.calls),1)
         row=restarted.local.journal.db.execute('SELECT status,reference FROM smart_exits').fetchone()
-        self.assertEqual(row,('uncertain',None))
+        self.assertEqual(row,('closed',None))
     @patch('time.time',return_value=NOW)
     def test_unknown_positions_are_never_adopted_or_closed(self,_):
         self.transport.unknown=True

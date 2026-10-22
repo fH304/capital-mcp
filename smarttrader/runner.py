@@ -25,6 +25,7 @@ from .spreadstudy import SpreadStudy
 from .strategy import active_setup
 from .candles import MarketDataError
 from .trend_following import trend_candles, reversal_exit
+from .hourly_hedge import should_close
 from .strategy_study import StrategyStudy
 from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
 from .trial import (is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped,
@@ -116,8 +117,19 @@ class Config:
         if self.decision_engine=='rules' and not self.technical_entries:
             raise ValueError('Rules engine requires the approved technical entry policy')
         self.core_rules_only=self.decision_engine=='rules'
+        self.strategy=env.get('SMART_RULES_STRATEGY',
+                              'hourly_hedge' if (self.trial and self.decision_engine=='rules'
+                                                 and is_approved_account(self.account)) else 'trend')
+        if self.strategy=='hourly_hedge' and self.trial and self.decision_engine=='rules':
+            self.max_positions=0  # user replaced the old position-count policy
+        if self.strategy not in {'trend','hourly_hedge'} or (self.strategy=='hourly_hedge' and
+                (not self.trial or self.decision_engine!='rules' or self.max_positions!=0)):
+            raise ValueError('Hourly hedging requires the approved rules-only demo portfolio')
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
                       json.loads(env.get('SMART_NEWS_SYMBOLS','{"EURUSD":"EURUSD.FOREX"}')))
+        if self.strategy=='hourly_hedge':
+            self.symbols={epic:epic for epic,(kind,_,_) in MARKETS.items()
+                          if kind in {'forex','metals'}}
         if not isinstance(self.symbols,dict) or not 1<=len(self.symbols) or (not self.broad and len(self.symbols)>32):
             raise ValueError('Invalid news mappings')
         for epic,symbol in self.symbols.items():
@@ -348,7 +360,8 @@ class Worker:
         usable=not (reconciled['unknown'] or reconciled['changed'] or reconciled['unresolved'] or state['working_orders'])
         if not usable:
             self.emit('account_review_required',unknown_positions=len(reconciled['unknown']),
-                      changed_positions=len(reconciled['changed']),unresolved=reconciled['unresolved'])
+                      changed_positions=len(reconciled['changed']),unresolved=reconciled['unresolved'],
+                      **journal.review_summary())
         for item in state['positions']:
             pos=item['position']
             deal=pos['dealId']
@@ -360,7 +373,11 @@ class Worker:
             view=PositionView(deal,True,pos['direction'],pos['stopLevel'] if protected else plan['stop_level'],
                               quote['bid'],quote['ask'],quote['quote_time'],True,protected)
             decision=exit_decision(view,self.clock(),state['daily']['stopped'])
-            if decision['action']=='hold' and plan.get('target_level') is None:
+            if decision['action']=='hold' and plan.get('strategy')=='hourly_hedge_v1':
+                reason=should_close(plan,pos,self.clock())
+                if reason:
+                    decision=dict(action='close_intent',reason=reason)
+            elif decision['action']=='hold' and plan.get('target_level') is None:
                 try:
                     if self.trend_reversed(broker,deal,plan,pos['direction']):
                         decision=dict(action='close_intent',reason='confirmed_trend_reversal')
@@ -446,6 +463,8 @@ class Worker:
     def opportunities(self):
         if not self.trial_active():
             return True  # protection runs independently; no automatic fallback
+        if self.config.strategy=='hourly_hedge':
+            return self.hourly_opportunities()
         if self.config.broad:
             return self.broad_opportunities()
         broker,journal=self.resources()
@@ -468,6 +487,43 @@ class Worker:
         if self.config.continuous:
             return self.monitor_market(epic,context,scoring,articles)
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
+
+    def hourly_opportunities(self):
+        """Rotate account-visible markets, one BUY and SELL each UTC hour."""
+        epics=list(self.config.symbols)
+        epic=epics[self.rotation%len(epics)]
+        self.rotation+=1
+        broker,journal=self.resources()
+        try:
+            # Adaptive daily-loss policy still needs current closed candles.
+            from .candles import normalize_candles
+            rows=broker.prices(epic,'MINUTE_15',40)
+            frame=normalize_candles(rows,'MINUTE_15',self.clock())
+            if self.config.risk_mode=='auto':
+                self.local.daily.update_market(epic,frame,self.clock())
+                self.local.daily.activate(epic)
+            state,reconciled=self.entry_state(broker,journal)
+            self.gate.stopped(state['daily']['stopped'])
+            reason=self.capacity_reason(epic,state,reconciled)
+            if reason or not state['daily'].get('ready',True) or not self.gate.may_enter(self.clock()):
+                self.emit('hourly_entry_blocked',epic=epic,
+                          reason=reason or 'daily_or_feed_gate')
+                return True
+            # Sequential broker orders are the only safe way to independently
+            # confirm each leg; the second can be rejected by shared limits.
+            for direction in ('BUY','SELL'):
+                if not self.trial_active():
+                    break
+                with self.order_lock:
+                    result=journal.process_hourly(epic,direction,broker,
+                                                  now=self.clock(),armed=self.config.armed)
+                self.emit('hourly_entry_'+result['status'],epic=epic,direction=direction,
+                          **{k:v for k,v in result.items() if k not in ('status','plan')})
+            return True
+        except (CapitalError,MarketDataError,ValueError,EntryPreflightBlocked) as error:
+            self.emit('hourly_market_unavailable',epic=epic,
+                      error_type=type(error).__name__,reason=str(error))
+            return True
 
     def broad_opportunities(self):
         broker,journal=self.resources()
@@ -792,6 +848,16 @@ def main():
         if args.once and config.armed:
             raise ValueError('--once is available in preview only')
         lock=WorkerLock(config.legacy+'.lock')
+        if config.strategy=='hourly_hedge':
+            try:
+                catalogue=CapitalDemo(key=config.key,user=config.user,password=config.password,
+                                      account_id=config.account,daily_controller=None,armed=False)
+                catalogue.login()
+                epics=catalogue.available_hourly_epics()
+                config.symbols={epic:epic for epic in epics}
+                log('hourly_universe_discovered',markets=len(epics))
+            except CapitalError as error:
+                log('hourly_universe_fallback',markets=len(config.symbols),reason=str(error))
         if config.broad and config.trial and config.decision_engine=='rules' and not config.core_rules_only:
             # Discovery precedes risk-controller creation so its policy includes
             # every account-visible crypto market. Existing markets survive a
@@ -822,7 +888,8 @@ def main():
             leverage_policy='broker_current_no_probability_increase',
             analysis_framework=FRAMEWORK,
             strategy_research='disabled' if config.decision_engine=='rules' else STRATEGY,
-            strategy_execution='independent_hour_day_trends_demo',
+            strategy_execution=('hourly_two_sided_demo' if config.strategy=='hourly_hedge'
+                                else 'independent_hour_day_trends_demo'),
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .analysis import validate_recommendation
 from .policy import assessed_size
-from .sizing import size_position
+from .sizing import size_position, SizingError
 from .exposure import entry_limits, portfolio_entry_limits, ExposureError
 from .trial import TrialEntryBlocked, is_approved_account
 
@@ -225,6 +225,31 @@ class DemoCoordinator:
             return dict(status='blocked',reason=str(error))
         if plan is None:
             return {'status': 'wait'}
+        return self._submit_planned(signal_id,plan,context,broker,armed,
+                                    recommendation,snapshot,now)
+
+    def process_hourly(self, epic, direction, broker, now=None, armed=False):
+        """One idempotent BUY or SELL attempt per UTC hour and instrument."""
+        from .hourly_hedge import hour_start, plan_entry as hourly_plan
+        if self.max_positions != 0 or not self.allow_technical_entry:
+            raise CoordinationError('Hourly hedging needs approved demo portfolio policy')
+        if broker.environment != 'demo' or str(broker.account_id) != self.account_id:
+            raise CoordinationError('Authenticated demo account mismatch')
+        if self.unresolved():
+            raise CoordinationError('Account ownership or order review required')
+        now=time.time() if now is None else now
+        snapshot=broker.snapshot(epic)
+        try:
+            stop=broker.hourly_stop(snapshot,direction)
+            plan=hourly_plan(snapshot,self.owned(),direction,now,stop)
+        except (ValueError,KeyError,ExposureError,SizingError) as error:
+            return dict(status='blocked',reason=str(error))
+        signal_id='hourly:%d:%s' % (hour_start(now),direction)
+        return self._submit_planned(signal_id,plan,{'epic':epic},broker,armed,
+                                    None,snapshot,now)
+
+    def _submit_planned(self,signal_id,plan,context,broker,armed,
+                        recommendation,snapshot,now):
         if self.unresolved():
             raise CoordinationError('Unresolved order; review required')
         if armed is not True:
@@ -238,7 +263,7 @@ class DemoCoordinator:
             if self.db.execute("SELECT 1 FROM smart_entries WHERE account=? AND status IN ('pending','uncertain')",
                                (self.account_id,)).fetchone():
                 raise CoordinationError('Unresolved order; broker reconciliation required')
-            if self.max_positions != 1:
+            if self.max_positions != 1 and recommendation is not None:
                 # Another client must not use a pre-reservation snapshot after
                 # an order has been confirmed on the shared journal.
                 plan = plan_entry(recommendation, context, snapshot, now,
@@ -305,6 +330,16 @@ class DemoCoordinator:
                     (self.account_id,)).fetchone() or self.db.execute(
                     "SELECT 1 FROM smart_exits WHERE account=? AND status IN ('pending','uncertain')",(self.account_id,)).fetchone())
 
+    def review_summary(self):
+        """Counts only; log no order references or broker credentials."""
+        result={}
+        for table,category in (('smart_entries','entries'),('smart_exits','exits')):
+            rows=self.db.execute('SELECT status,count(*) FROM '+table+
+                                 ' WHERE account=? AND status IN (\'pending\',\'uncertain\') GROUP BY status',
+                                 (self.account_id,))
+            result.update({category+'_'+status:count for status,count in rows})
+        return result
+
     def reconcile(self, state):
         if str(state.get('account_id')) != self.account_id or not isinstance(state.get('positions'),list):
             raise CoordinationError('Account reconciliation mismatch')
@@ -317,6 +352,14 @@ class DemoCoordinator:
                 # Broker stop/target/external close: do not invent a realized P/L.
                 self.db.execute("UPDATE smart_entries SET status='closed' WHERE account=? AND deal=?",
                                 (self.account_id,deal))
+            if state.get('working_orders') == []:
+                # A disputed close needs no resend once the complete broker
+                # list independently proves the named deal is absent.
+                for (deal,) in self.db.execute("SELECT deal FROM smart_exits WHERE account=? "
+                                               "AND status IN ('pending','uncertain')",(self.account_id,)):
+                    if deal not in actual:
+                        self.db.execute("UPDATE smart_exits SET status='closed' WHERE account=? AND deal=?",
+                                        (self.account_id,deal))
         changed = []
         for deal in owned.keys() & actual.keys():
             pos, market = actual[deal]['position'],actual[deal]['market']
@@ -334,8 +377,12 @@ class DemoCoordinator:
             raise CoordinationError('Close ownership or account mismatch')
         if armed is not True:
             return dict(status='close_preview',deal_id=deal,reason=reason)
-        if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached','confirmed_trend_reversal'}:
+        if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached',
+                          'confirmed_trend_reversal','hourly_profit_target','hourly_window_end'}:
             raise CoordinationError('Exit evidence is not independently validated')
+        if reason in {'hourly_profit_target','hourly_window_end'} and (
+                plan.get('strategy')!='hourly_hedge_v1' or type(plan.get('hour_start')) is not int):
+            raise CoordinationError('No recorded hourly exit policy for owned position')
         if reason == 'confirmed_trend_reversal' and (
                 plan.get('target_level') is not None or plan.get('trend_route') not in ('HOUR','DAY')
                 or type(plan.get('trend_signal_at')) not in (int,float)):
