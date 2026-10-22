@@ -196,6 +196,8 @@ class DemoCoordinator:
         self.db.execute('CREATE TABLE IF NOT EXISTS smart_exits ('
                         'deal TEXT PRIMARY KEY, account TEXT NOT NULL, status TEXT NOT NULL, '
                         'reason TEXT NOT NULL, reference TEXT)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS smart_uncertain_reviews ('
+                        'signal TEXT PRIMARY KEY, account TEXT NOT NULL, first_seen REAL NOT NULL)')
         self.db.commit()
 
     def close(self):
@@ -340,13 +342,14 @@ class DemoCoordinator:
             result.update({category+'_'+status:count for status,count in rows})
         return result
 
-    def reconcile(self, state):
+    def reconcile(self, state, now=None):
         if str(state.get('account_id')) != self.account_id or not isinstance(state.get('positions'),list):
             raise CoordinationError('Account reconciliation mismatch')
         owned = self.owned()
         actual = {x['position']['dealId']:x for x in state['positions']}
         if len(actual)!=len(state['positions']):
             raise CoordinationError('Duplicate position identifiers')
+        released=0
         with self.db:
             for deal in owned.keys()-actual.keys():
                 # Broker stop/target/external close: do not invent a realized P/L.
@@ -360,6 +363,36 @@ class DemoCoordinator:
                     if deal not in actual:
                         self.db.execute("UPDATE smart_exits SET status='closed' WHERE account=? AND deal=?",
                                         (self.account_id,deal))
+            # Old order transports can time out with no reference. Preserve the
+            # signal's primary key and the uncertain history, but release the
+            # *entry gate* only after two complete, spaced broker snapshots
+            # prove no unowned position or pending working order remains.
+            if (type(now) in (int,float) and math.isfinite(now)
+                    and type(state.get('observed_at')) in (int,float)
+                    and 0<=now-state['observed_at']<=30
+                    and state.get('working_orders')==[]
+                    and set(actual)==set(owned)&set(actual)):
+                for signal,raw in self.db.execute(
+                    "SELECT signal,plan FROM smart_entries WHERE account=? AND status='uncertain'",
+                    (self.account_id,)):
+                    try:
+                        plan=json.loads(raw)
+                        candle=plan['signal_candle']
+                        if type(candle) not in (int,float) or not math.isfinite(candle) \
+                                or not 3600 < now-candle < 30*86400:
+                            continue
+                    except (ValueError,KeyError,TypeError):
+                        continue
+                    row=self.db.execute('SELECT first_seen FROM smart_uncertain_reviews '
+                                        'WHERE signal=? AND account=?',(signal,self.account_id)).fetchone()
+                    if row is None:
+                        self.db.execute('INSERT INTO smart_uncertain_reviews VALUES (?,?,?)',
+                                        (signal,self.account_id,now))
+                    elif 120<=now-row[0]<=7*86400:
+                        self.db.execute("UPDATE smart_entries SET status='inactive_unverified' "
+                                        "WHERE signal=? AND account=? AND status='uncertain'",
+                                        (signal,self.account_id))
+                        released+=1
         changed = []
         for deal in owned.keys() & actual.keys():
             pos, market = actual[deal]['position'],actual[deal]['market']
@@ -369,7 +402,7 @@ class DemoCoordinator:
                 changed.append(deal)
         return dict(owned={k:v for k,v in owned.items() if k in actual and k not in changed},
                     unknown=sorted(actual.keys()-owned.keys()),changed=changed,
-                    unresolved=self.unresolved())
+                    unresolved=self.unresolved(),historical_review_released=released)
 
     def close_position(self, deal, reason, broker, armed=False):
         plan=self.owned().get(deal)

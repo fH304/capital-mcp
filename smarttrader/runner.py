@@ -345,7 +345,11 @@ class Worker:
         broker,journal=self.resources()
         state=broker.account_state()
         previously_owned=journal.owned() if self.config.trial else {}
-        reconciled=journal.reconcile(state)
+        reconciled=journal.reconcile(state,self.clock())
+        if reconciled['historical_review_released']:
+            self.emit('historical_order_review_released',
+                      count=reconciled['historical_review_released'],
+                      outcome='not_verified_no_open_exposure')
         for deal in set(self.trend_exit_probe)-set(reconciled['owned']):
             self.trend_exit_probe.pop(deal,None)
         if self.config.trial:
