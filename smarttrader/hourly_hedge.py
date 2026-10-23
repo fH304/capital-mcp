@@ -91,13 +91,15 @@ def plan_entry(snapshot, owned, direction, now, stop):
         raise ValueError('Protective stop has wrong side')
     inputs = {key:snapshot[key] for key in ('equity','free_margin','point_value',
               'quote_to_account','margin_per_unit','min_size','size_step','max_size')}
-    # Compute the previous strategy's stand-alone base on the same stop; no
-    # silent downsize masquerading as fivefold volume.
+    # The previous risk fraction gives a theoretical base. Apply fivefold
+    # sizing before rounding to the broker step and enforcing its minimum:
+    # a base below the minimum can become executable at fivefold volume.
     base = size_position(stop_distance=(bid-stop if direction == 'BUY' else stop-ask),
                          spread=ask-bid, open_risk=0,
                          daily_remaining_risk=snapshot['daily_remaining_risk'],
                          risk_fraction='.0005', portfolio_fraction='.0025',
-                         margin_fraction='.1', **inputs)['size']
+                         margin_fraction='.1',
+                         **dict(inputs,min_size=1e-9,size_step=1e-9))['size']
     step = Decimal(str(snapshot['size_step']))
     size = float((Decimal(str(base)) * MULTIPLIER / step).to_integral_value(rounding=ROUND_FLOOR) * step)
     if size > snapshot['max_size'] or size < snapshot['min_size']:

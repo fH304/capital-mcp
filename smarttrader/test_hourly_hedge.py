@@ -123,6 +123,13 @@ class HourlyHedgeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             plan_entry(snapshot([held]),owned,'BUY',NOW,1.0989)
 
+    def test_fivefold_volume_can_reach_broker_minimum_after_scaling(self):
+        s=snapshot()
+        s.update(min_size=1000,size_step=1000)
+        plan=plan_entry(s,{},'BUY',NOW,1.0989)
+        self.assertEqual(plan['size'],2000)
+        self.assertLessEqual(plan['planned_risk'],s['equity']*.0125)
+
     def test_journal_confirms_both_once_then_profit_or_time_closes(self):
         with patch('smarttrader.trial.ACCOUNT_SHA256',
                    hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
