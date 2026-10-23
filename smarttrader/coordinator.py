@@ -239,8 +239,11 @@ class DemoCoordinator:
             raise CoordinationError('Authenticated demo account mismatch')
         if self.unresolved():
             raise CoordinationError('Account ownership or order review required')
-        now=time.time() if now is None else now
         snapshot=broker.snapshot(epic)
+        # A broker snapshot can be newer than the scheduler timestamp, especially
+        # its USD conversion stamp created at the end of the HTTP sequence.
+        # Compare quote freshness against a clock read after that sequence.
+        now=max(now,broker.clock()) if now is not None and callable(getattr(broker,'clock',None)) else (time.time() if now is None else now)
         try:
             stop=broker.hourly_stop(snapshot,direction)
             plan=hourly_plan(snapshot,self.owned(),direction,now,stop)

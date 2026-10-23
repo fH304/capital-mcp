@@ -75,6 +75,27 @@ class FakeBroker:
 
 
 class HourlyHedgeTests(unittest.TestCase):
+    def test_entry_uses_clock_after_broker_snapshot_for_quote_freshness(self):
+        broker=FakeBroker()
+        broker.clock=lambda: NOW+2
+        old_snapshot=broker.snapshot
+        def late_snapshot(epic):
+            result=old_snapshot(epic)
+            result['conversion_time']=NOW+1
+            result['quote_time']=NOW+1
+            return result
+        broker.snapshot=late_snapshot
+        with patch('smarttrader.trial.ACCOUNT_SHA256',
+                   hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
+            with tempfile.TemporaryDirectory() as directory:
+                journal=DemoCoordinator(directory+'/journal.sqlite',APPROVED_ACCOUNT,
+                                        max_positions=0,allow_technical_entry=True)
+                try:
+                    result=journal.process_hourly('EURUSD','BUY',broker,NOW,True)
+                    self.assertEqual(result['status'],'confirmed')
+                finally:
+                    journal.close()
+
     def test_catalogue_selects_supported_fx_and_metals(self):
         markets=[dict(epic='EURJPY',symbol='EUR/JPY',instrumentType='CURRENCIES'),
                  dict(epic='GBPUSD',symbol='GBP/USD',instrumentType='CURRENCIES'),
