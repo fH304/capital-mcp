@@ -242,6 +242,11 @@ class HourlyHedgeTests(unittest.TestCase):
                  dict(epic='BTCUSD',symbol='BTC/USD',instrumentType='CRYPTOCURRENCIES')]
         self.assertEqual(market_epics(markets),['EURJPY','GBPUSD','NZDJPY','PALLADIUM'])
 
+    def test_fx_pairs_are_attempted_before_thin_metals(self):
+        markets=[dict(epic='ALUMINUM',instrumentName='Aluminium',instrumentType='COMMODITIES'),
+                 dict(epic='EURUSD',symbol='EUR/USD',instrumentType='CURRENCIES')]
+        self.assertEqual(market_epics(markets),['EURUSD','ALUMINUM'])
+
     def test_former_size_and_two_opposite_legs_share_sizing_allowance(self):
         first=plan_entry(snapshot(),{},'BUY',NOW,1.0989)
         self.assertEqual(first['strategy'],'hourly_hedge_v1')

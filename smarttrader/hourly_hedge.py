@@ -28,7 +28,7 @@ def market_epics(markets):
     """Use Capital's authenticated catalogue, then validate each contract at entry."""
     if not isinstance(markets, list):
         raise ValueError('Invalid market catalogue')
-    selected = set()
+    currencies, metals = set(), set()
     for item in markets:
         if not isinstance(item, dict):
             raise ValueError('Invalid market catalogue item')
@@ -39,11 +39,11 @@ def market_epics(markets):
             symbol = re.sub(r'[^A-Z]', '', str(item.get('symbol', '')).upper())
             if len(symbol) == 6 and ({symbol[:3], symbol[3:]} & FOCUS) \
                     and symbol[3:] in ROUTES | {'USD': None}:
-                selected.add(epic)
+                currencies.add(epic)
         elif kind == 'COMMODITIES' and NAME_METALS.search(str(item.get('instrumentName', ''))):
             # Metadata/FX checks at entry still reject unsupported contracts.
-            selected.add(epic)
-    return sorted(selected)
+            metals.add(epic)
+    return sorted(currencies)+sorted(metals-currencies)
 
 
 def should_close(plan, position, now):
