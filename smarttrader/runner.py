@@ -345,7 +345,7 @@ class Worker:
         broker,journal=self.resources()
         state=broker.account_state()
         previously_owned=journal.owned() if self.config.trial else {}
-        reconciled=journal.reconcile(state,self.clock())
+        reconciled=journal.reconcile(state,self.clock(),broker)
         if reconciled['broker_confirmation_recovered']:
             self.emit('broker_confirmation_recovered',
                       count=reconciled['broker_confirmation_recovered'])
@@ -368,6 +368,7 @@ class Worker:
         if not usable:
             self.emit('account_review_required',unknown_positions=len(reconciled['unknown']),
                       changed_positions=len(reconciled['changed']),unresolved=reconciled['unresolved'],
+                      broker_recovery_review=reconciled['broker_recovery_review'],
                       **journal.review_summary())
         for item in state['positions']:
             pos=item['position']

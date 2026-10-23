@@ -288,6 +288,31 @@ class HourlyHedgeTests(unittest.TestCase):
             finally:
                 journal.close()
 
+    def test_broker_confirmation_recovers_when_position_reference_differs(self):
+        s=snapshot()
+        s.update(margin_factor=.01,margin_per_unit=.011001)
+        plan=plan_entry(s,{},'BUY',NOW,1.0989)
+        held=dict(position=dict(dealId='deal-new',dealReference='position-ref',
+                   direction='BUY',size=plan['size'],level=1.1001,
+                   stopLevel=plan['stop_level'],profitLevel=None,leverage=100,
+                   currency='USD',contractSize=1),market=dict(epic='EURUSD'))
+        class ConfirmingBroker:
+            def get(self,path):
+                assert path=='/confirms/order-ref'
+                return dict(dealStatus='ACCEPTED',affectedDeals=[dict(dealId='deal-new',status='OPENED')])
+        with tempfile.TemporaryDirectory() as directory:
+            journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0)
+            try:
+                with journal.db:
+                    journal.db.execute('INSERT INTO smart_entries VALUES (?,?,?,?,?,?)',
+                        ('signal',APPROVED_ACCOUNT,'uncertain',json.dumps(plan),None,'order-ref'))
+                state=dict(account_id=APPROVED_ACCOUNT,positions=[held],working_orders=[],observed_at=NOW)
+                result=journal.reconcile(state,NOW,ConfirmingBroker())
+                self.assertEqual(result['broker_confirmation_recovered'],1)
+                self.assertEqual(result['unknown'],[])
+            finally:
+                journal.close()
+
 
 if __name__=='__main__':
     unittest.main()

@@ -353,7 +353,7 @@ class DemoCoordinator:
             result.update({category+'_'+status:count for status,count in rows})
         return result
 
-    def reconcile(self, state, now=None):
+    def reconcile(self, state, now=None, broker=None):
         if str(state.get('account_id')) != self.account_id or not isinstance(state.get('positions'),list):
             raise CoordinationError('Account reconciliation mismatch')
         owned = self.owned()
@@ -362,6 +362,7 @@ class DemoCoordinator:
             raise CoordinationError('Duplicate position identifiers')
         released=0
         recovered=0
+        recovery_review=[]
         with self.db:
             for deal in owned.keys()-actual.keys():
                 # Broker stop/target/external close: do not invent a realized P/L.
@@ -393,7 +394,23 @@ class DemoCoordinator:
                         continue
                     matches=[item for deal,item in actual.items()
                              if deal not in owned and item['position'].get('dealReference')==reference]
+                    if not matches and broker is not None:
+                        # Capital's position dealReference may differ from the
+                        # order reference. Its authenticated confirmation is
+                        # authoritative for the opened deal ID.
+                        try:
+                            from .capital import identifier
+                            confirmation=broker.get('/confirms/'+identifier(reference))
+                            deals=confirmation.get('affectedDeals')
+                            if confirmation.get('dealStatus')=='ACCEPTED' and isinstance(deals,list) \
+                                    and len(deals)==1 and deals[0].get('status')=='OPENED':
+                                deal=deals[0].get('dealId')
+                                if deal in actual and deal not in owned:
+                                    matches=[actual[deal]]
+                        except Exception:
+                            recovery_review.append('confirmation_unavailable')
                     if len(matches)!=1:
+                        recovery_review.append('reference_not_matched')
                         continue
                     try:
                         plan=json.loads(raw)
@@ -417,6 +434,7 @@ class DemoCoordinator:
                                and 0<risk<=plan['portfolio_risk_limit']-plan['existing_risk']+1e-9
                                and 0<margin<=plan['required_margin']*1.05+1)
                         if not valid:
+                            recovery_review.append('fill_or_margin_mismatch')
                             continue
                         plan.update(leverage=leverage,actual_risk=risk,actual_margin=margin,
                                     combined_actual_risk=plan['existing_risk']+risk,
@@ -427,6 +445,7 @@ class DemoCoordinator:
                         owned[pos['dealId']]=plan
                         recovered+=1
                     except (KeyError,TypeError,ValueError,ZeroDivisionError,OverflowError):
+                        recovery_review.append('incomplete_fill_evidence')
                         continue
                 if set(actual)==set(owned)&set(actual):
                     for signal,raw in self.db.execute(
@@ -461,7 +480,8 @@ class DemoCoordinator:
         return dict(owned={k:v for k,v in owned.items() if k in actual and k not in changed},
                     unknown=sorted(actual.keys()-owned.keys()),changed=changed,
                     unresolved=self.unresolved(),historical_review_released=released,
-                    broker_confirmation_recovered=recovered)
+                    broker_confirmation_recovered=recovered,
+                    broker_recovery_review=sorted(set(recovery_review)))
 
     def close_position(self, deal, reason, broker, armed=False):
         plan=self.owned().get(deal)
