@@ -14,8 +14,8 @@ from .sizing import SizingError, size_position
 
 NAME_METALS = re.compile(r'\b(gold|silver|platinum|palladium|copper|aluminium|aluminum|nickel|zinc)\b', re.I)
 FOCUS = {'USD', 'JPY', 'GBP', 'NZD'}
-MULTIPLIER = 5
-TARGET_USD = 1.0
+MULTIPLIER = 1
+TARGET_USD = .04
 
 
 def hour_start(now):
@@ -61,11 +61,10 @@ def should_close(plan, position, now):
 
 
 def plan_entry(snapshot, owned, direction, now, stop):
-    """Request exactly five times the old per-entry base, or block the entry.
+    """Use the former 0.05% sizing reference, without placing a stop.
 
-    The old base is the existing 0.05% equity sizing policy on this contract.
-    Other positions and the 5x aggregate risk/margin ceiling are checked again
-    by the broker adapter immediately before POST.
+    The broker's stop-distance rules give a *hypothetical* sizing distance.
+    It is not a maximum loss: an unprotected position can lose more.
     """
     if snapshot.get('environment') != 'demo' or direction not in ('BUY', 'SELL'):
         raise ValueError('Demo and an explicit direction required')
@@ -85,15 +84,14 @@ def plan_entry(snapshot, owned, direction, now, stop):
                                     hourly_direction=direction, risk_multiplier=MULTIPLIER)
     bid, ask = snapshot['bid'], snapshot['ask']
     if not 0 < bid <= ask or not math.isfinite(stop) or stop <= 0:
-        raise ValueError('Invalid quote or protective stop')
+        raise ValueError('Invalid quote or sizing reference')
     loss = (ask-stop if direction == 'BUY' else stop-bid)
     if loss <= 0:
-        raise ValueError('Protective stop has wrong side')
+        raise ValueError('Sizing reference has wrong side')
     inputs = {key:snapshot[key] for key in ('equity','free_margin','point_value',
               'quote_to_account','margin_per_unit','min_size','size_step','max_size')}
-    # The previous risk fraction gives a theoretical base. Apply fivefold
-    # sizing before rounding to the broker step and enforcing its minimum:
-    # a base below the minimum can become executable at fivefold volume.
+    # Use the former per-entry size before the fivefold hourly adjustment.
+    # The reference distance is a scenario estimate, not an actual stop.
     base = size_position(stop_distance=(bid-stop if direction == 'BUY' else stop-ask),
                          spread=ask-bid, open_risk=0,
                          daily_remaining_risk=snapshot['daily_remaining_risk'],
@@ -101,21 +99,24 @@ def plan_entry(snapshot, owned, direction, now, stop):
                          margin_fraction='.1',
                          **dict(inputs,min_size=1e-9,size_step=1e-9))['size']
     step = Decimal(str(snapshot['size_step']))
-    maximum=min(Decimal(str(base))*MULTIPLIER,
+    maximum=min(Decimal(str(base)),
                 Decimal(str(limits['risk_budget']))/Decimal(str(loss*snapshot['quote_to_account'])),
                 Decimal(str(limits['margin_budget']))/Decimal(str(snapshot['margin_per_unit'])),
                 Decimal(str(snapshot['max_size'])))
     size = float((maximum / step).to_integral_value(rounding=ROUND_FLOOR) * step)
     if size < snapshot['min_size']:
-        raise ValueError('Broker minimum exceeds remaining shared risk or margin')
+        raise ValueError('Broker minimum exceeds former size or remaining allowance')
     risk = size*loss*snapshot['quote_to_account']
     margin = size*snapshot['margin_per_unit']
     if risk > limits['risk_budget'] + 1e-9 or margin > limits['margin_budget'] + 1e-9:
-        raise ExposureError('Fivefold size exceeds remaining shared risk or margin')
+        raise ExposureError('Size exceeds remaining reference allowance or margin')
     result = dict(account_id=str(snapshot['account_id']),epic=epic,direction=direction,
-                  size=size,stop_level=stop,target_level=None,
+                  size=size,stop_level=None,target_level=None,
                   target_basis='hourly_usd_profit_or_hour_end',
                   strategy='hourly_hedge_v1',hour_start=now_hour,
+                  risk_basis='hourly_reference_unbounded',
+                  sizing_reference_distance=loss,entry_reference=ask if direction=='BUY' else bid,
+                  target_usd=TARGET_USD,
                   planned_risk=risk,required_margin=margin,
                   reason='hourly_two_sided_demo',article_ids=[],
                   signal_candle=candle,assessment='neutral',
@@ -125,7 +126,7 @@ def plan_entry(snapshot, owned, direction, now, stop):
                   combined_planned_risk=limits['existing_risk']+risk,
                   combined_required_margin=limits['existing_margin']+margin,
                   leverage=snapshot['leverage'],margin_factor=snapshot['margin_factor'],
-                  entry_policy='hourly_hedge_risk_bounded')
+                  entry_policy='hourly_reference_sizing_no_stop')
     for key in ('account_currency','quote_currency','fx_epic','fx_rate',
                 'quote_to_account','conversion_time','conversion_fee_buffer'):
         if key in snapshot:

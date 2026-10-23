@@ -153,7 +153,7 @@ class PairTransport(PriceTransport):
             self.positions[deal]=dict(position=dict(dealId=deal,currency='USD',contractSize=1,
                   direction=p['direction'],size=p['size'],level=fill,
                   leverage=self.filled_leverage or self.leverage,
-                  stopLevel=p['stopLevel'],profitLevel=p.get('profitLevel')),market=dict(epic=p['epic']))
+                  stopLevel=p.get('stopLevel'),profitLevel=p.get('profitLevel')),market=dict(epic=p['epic']))
             self.references[ref]=deal
             if self.fail_post: raise TimeoutError('transport outcome unknown')
             result={'dealReference':ref}

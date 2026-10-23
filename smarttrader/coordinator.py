@@ -417,14 +417,18 @@ class DemoCoordinator:
                         item=matches[0]
                         pos,market=item['position'],item['market']
                         leverage=pos['leverage']
-                        risk=(pos['level']-pos['stopLevel'] if pos['direction']=='BUY'
-                              else pos['stopLevel']-pos['level'])*pos['size']*plan['quote_to_account']
+                        if plan.get('risk_basis')=='hourly_reference_unbounded' and plan.get('stop_level') is None:
+                            risk=(plan['sizing_reference_distance']+abs(pos['level']-plan['entry_reference'])) \
+                                 *pos['size']*plan['quote_to_account']
+                        else:
+                            risk=(pos['level']-pos['stopLevel'] if pos['direction']=='BUY'
+                                  else pos['stopLevel']-pos['level'])*pos['size']*plan['quote_to_account']
                         margin=pos['level']*pos['size']*plan['margin_factor']*plan['fx_rate']
                         valid=(plan.get('strategy')=='hourly_hedge_v1'
                                and market['epic']==plan['epic']
                                and pos['direction']==plan['direction']
                                and pos['size']==plan['size']
-                               and pos['stopLevel']==plan['stop_level']
+                               and pos.get('stopLevel')==plan['stop_level']
                                and pos.get('profitLevel')==plan['target_level']
                                and pos['currency']==plan['quote_currency']
                                and pos['contractSize']==1
@@ -490,8 +494,11 @@ class DemoCoordinator:
         if armed is not True:
             return dict(status='close_preview',deal_id=deal,reason=reason)
         if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached',
-                          'confirmed_trend_reversal','hourly_profit_target','hourly_window_end'}:
+                          'confirmed_trend_reversal','hourly_profit_target','hourly_window_end',
+                          'superseded_trend_position'}:
             raise CoordinationError('Exit evidence is not independently validated')
+        if reason == 'superseded_trend_position' and plan.get('strategy')=='hourly_hedge_v1':
+            raise CoordinationError('Cannot migrate an hourly position as an old trend entry')
         if reason in {'hourly_profit_target','hourly_window_end'} and (
                 plan.get('strategy')!='hourly_hedge_v1' or type(plan.get('hour_start')) is not int):
             raise CoordinationError('No recorded hourly exit policy for owned position')

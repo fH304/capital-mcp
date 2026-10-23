@@ -440,7 +440,10 @@ class CapitalDemo:
             if direction not in ('BUY', 'SELL'):
                 raise CapitalError('Invalid direction')
             entry = data['ask'] if direction=='BUY' else data['bid']
-            stop = number(plan['stop_level'], True)
+            no_stop_hourly=(plan.get('strategy')=='hourly_hedge_v1'
+                            and plan.get('risk_basis')=='hourly_reference_unbounded'
+                            and plan.get('stop_level') is None)
+            stop = None if no_stop_hourly else number(plan['stop_level'], True)
             target = (None if plan['target_level'] is None else number(plan['target_level'], True))
             trend_exit=(plan.get('target_basis')=='confirmed_same_frame_reversal_no_take_profit'
                         and plan.get('trend_route') in ('HOUR','DAY')
@@ -454,7 +457,8 @@ class CapitalDemo:
                 raise EntryPreflightBlocked('hourly_window_changed_before_submission')
             if target is None and not (trend_exit or hourly_exit):
                 raise CapitalError('Unverified trend exit policy')
-            loss = entry-stop if direction=='BUY' else stop-entry
+            loss = (number(plan['sizing_reference_distance'], True) if no_stop_hourly
+                    else entry-stop if direction=='BUY' else stop-entry)
             reward = (target-entry if direction=='BUY' else entry-target) if target is not None else None
             def distance_rule(name):
                 rule = rules[name]
@@ -465,7 +469,7 @@ class CapitalDemo:
                     return entry*v/100
                 raise CapitalError('Unknown distance rule')
             low, high = distance_rule('minStopOrProfitDistance'), distance_rule('maxStopOrProfitDistance')
-            if not low <= loss <= high or (target is not None and
+            if (not no_stop_hourly and not low <= loss <= high) or (target is not None and
                     (not low <= reward <= high or reward < 2*loss)):
                 if self.max_positions != 1:
                     raise EntryPreflightBlocked('protection_or_reward_risk_changed_before_submission')
@@ -480,7 +484,9 @@ class CapitalDemo:
                     raise EntryPreflightBlocked('combined_risk_or_margin_changed_before_submission')
                 raise CapitalError('Risk or margin budget exceeded')
             payload = dict(epic=plan['epic'], direction=direction, size=size,
-                           stopLevel=stop, guaranteedStop=False)
+                           guaranteedStop=False)
+            if stop is not None:
+                payload['stopLevel'] = stop
             if target is not None:
                 payload['profitLevel'] = target
             self.prepared = None  # consume even when the transport fails
@@ -509,7 +515,8 @@ class CapitalDemo:
                 return portfolio_entry_limits(data,self.ownership(),
                                               candle=plan.get('signal_candle'),now=self.clock(),
                                               hourly_direction=(plan['direction'] if plan.get('strategy')=='hourly_hedge_v1' else None),
-                                              risk_multiplier=(5 if plan.get('strategy')=='hourly_hedge_v1' else 1))
+                                              risk_multiplier=(5 if plan.get('strategy')=='hourly_hedge_v1'
+                                                               and plan.get('risk_basis')!='hourly_reference_unbounded' else 1))
             return entry_limits(data, self.ownership(), direction=plan.get('direction'),
                                 assessment=plan.get('assessment'), candle=plan.get('signal_candle'))
         except (ExposureError, ValueError, KeyError, TypeError):
@@ -542,13 +549,20 @@ class CapitalDemo:
                 pos, market = actual['position'], actual['market']
                 result = dict(status='confirmed', account_id=self.expected_account, deal_id=deal,
                               epic=market['epic'], direction=pos['direction'], size=number(pos['size'], True),
-                              stop_level=number(pos['stopLevel'], True),
+                              stop_level=(None if pos.get('stopLevel') is None
+                                          else number(pos['stopLevel'], True)),
                               target_level=(None if pos.get('profitLevel') is None
                                             else number(pos['profitLevel'], True)))
                 expected = self.pending[reference]
                 fx=self._conversion(expected['_quote_currency'])
                 fill = number(pos['level'], True)
-                fill_risk = fill-result['stop_level'] if result['direction']=='BUY' else result['stop_level']-fill
+                if expected.get('risk_basis')=='hourly_reference_unbounded' and expected.get('stop_level') is None:
+                    # This is a sizing scenario only; the open loss is unbounded
+                    # by any broker order when no stop was requested.
+                    fill_risk = number(expected['sizing_reference_distance'], True)+abs(
+                        fill-number(expected['entry_reference'], True))
+                else:
+                    fill_risk = fill-result['stop_level'] if result['direction']=='BUY' else result['stop_level']-fill
                 fill_reward = (result['target_level']-fill if result['direction']=='BUY'
                                else fill-result['target_level']) if result['target_level'] is not None else None
                 risk=fill_risk*result['size']*max(fx['quote_to_account'],expected['_conversion'])

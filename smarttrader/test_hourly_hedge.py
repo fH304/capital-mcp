@@ -2,11 +2,13 @@ import hashlib
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from .coordinator import DemoCoordinator
 from .capital import CapitalDemo
 from .hourly_hedge import hour_start, market_epics, plan_entry, should_close
+from .runner import Worker
 from .test_exposure import PairTransport
 from .trial import APPROVED_ACCOUNT
 
@@ -75,6 +77,68 @@ class FakeBroker:
 
 
 class HourlyHedgeTests(unittest.TestCase):
+    def test_worker_closes_unprotected_hourly_position_at_target_and_hour_end(self):
+        with patch('smarttrader.trial.ACCOUNT_SHA256',
+                   hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
+            for target,when,expected in ((.04,NOW,'hourly_profit_target'),
+                                         (-2,HOUR+3600,'hourly_window_end')):
+                with self.subTest(expected=expected),tempfile.TemporaryDirectory() as directory:
+                    journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0,
+                                            allow_technical_entry=True)
+                    try:
+                        broker=FakeBroker()
+                        result=journal.process_hourly('EURUSD','BUY',broker,NOW,True)
+                        self.assertEqual(result['status'],'confirmed')
+                        broker.positions[0]['position']['upl']=target
+                        broker.account_state=lambda:dict(account_id=APPROVED_ACCOUNT,
+                            positions=broker.positions,working_orders=[],equity=1000,
+                            daily=dict(stopped=False),observed_at=when)
+                        broker.market_quote=(lambda _:dict(bid=1.1,ask=1.1001,quote_time=when))
+                        worker=Worker.__new__(Worker)
+                        worker.resources=lambda:(broker,journal)
+                        worker.config=SimpleNamespace(trial=False,armed=True,mode='demo',strategy='hourly_hedge',
+                            analysis_mode='rules',symbols=[],calls=0,entry_evidence='technical')
+                        worker.clock=lambda:when
+                        worker.gate=SimpleNamespace(stopped=lambda _:None)
+                        worker.trend_exit_probe={}
+                        events=[]
+                        worker.emit=lambda event,**fields:events.append((event,fields))
+                        worker._positions()
+                        self.assertEqual(broker.closed,[result['deal_id']])
+                        self.assertTrue(any(fields.get('reason')==expected for _,fields in events))
+                    finally:
+                        journal.close()
+
+    def test_worker_closes_owned_legacy_trend_on_hourly_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0)
+            try:
+                old=dict(account_id=APPROVED_ACCOUNT,epic='EURUSD',direction='BUY',
+                         size=100,stop_level=1.09,target_level=1.15,quote_currency='USD')
+                with journal.db:
+                    journal.db.execute('INSERT INTO smart_entries (signal,account,status,plan,deal) '
+                                       'VALUES (?,?,?,?,?)',
+                                       ('old',APPROVED_ACCOUNT,'confirmed',json.dumps(old),'old-deal'))
+                broker=FakeBroker()
+                broker.positions=[dict(position=dict(dealId='old-deal',direction='BUY',
+                    size=100,stopLevel=1.09,level=1.10,currency='USD',contractSize=1),
+                    market=dict(epic='EURUSD'))]
+                broker.account_state=lambda:dict(account_id=APPROVED_ACCOUNT,
+                    positions=broker.positions,working_orders=[],equity=1000,
+                    daily=dict(stopped=False),observed_at=NOW)
+                worker=Worker.__new__(Worker)
+                worker.resources=lambda:(broker,journal)
+                worker.config=SimpleNamespace(trial=False,armed=True,mode='demo',strategy='hourly_hedge',
+                    analysis_mode='rules',symbols=[],calls=0,entry_evidence='technical')
+                worker.clock=lambda:NOW
+                worker.gate=SimpleNamespace(stopped=lambda _:None)
+                worker.trend_exit_probe={}
+                worker.emit=lambda *args,**kwargs:None
+                worker._positions()
+                self.assertEqual(broker.closed,['old-deal'])
+            finally:
+                journal.close()
+
     def test_entry_uses_clock_after_broker_snapshot_for_quote_freshness(self):
         broker=FakeBroker()
         broker.clock=lambda: NOW+2
@@ -105,11 +169,13 @@ class HourlyHedgeTests(unittest.TestCase):
                  dict(epic='BTCUSD',symbol='BTC/USD',instrumentType='CRYPTOCURRENCIES')]
         self.assertEqual(market_epics(markets),['EURJPY','GBPUSD','NZDJPY','PALLADIUM'])
 
-    def test_fivefold_size_and_two_opposite_legs_share_risk(self):
+    def test_former_size_and_two_opposite_legs_share_sizing_allowance(self):
         first=plan_entry(snapshot(),{},'BUY',NOW,1.0989)
         self.assertEqual(first['strategy'],'hourly_hedge_v1')
-        self.assertGreater(first['size'],1000)
-        self.assertLessEqual(first['planned_risk'],2.5)
+        self.assertIsNone(first['stop_level'])
+        self.assertEqual(first['risk_basis'],'hourly_reference_unbounded')
+        self.assertLess(first['size'],1000)
+        self.assertLessEqual(first['planned_risk'],.5)
         owned={'deal-1':dict(first,actual_risk=first['planned_risk'],
                              actual_margin=first['required_margin'])}
         held=dict(position=dict(dealId='deal-1',size=first['size'],direction='BUY',
@@ -119,18 +185,17 @@ class HourlyHedgeTests(unittest.TestCase):
         second=plan_entry(snapshot([held]),owned,'SELL',NOW,1.1012)
         self.assertEqual(second['hour_start'],first['hour_start'])
         self.assertEqual(second['direction'],'SELL')
-        self.assertLess(second['combined_planned_risk'],12.5)
+        self.assertLess(second['combined_planned_risk'],2.5)
         with self.assertRaises(ValueError):
             plan_entry(snapshot([held]),owned,'BUY',NOW,1.0989)
 
-    def test_fivefold_volume_can_reach_broker_minimum_after_scaling(self):
+    def test_former_size_does_not_round_up_to_broker_minimum(self):
         s=snapshot()
         s.update(min_size=1000,size_step=1000)
-        plan=plan_entry(s,{},'BUY',NOW,1.0989)
-        self.assertEqual(plan['size'],2000)
-        self.assertLessEqual(plan['planned_risk'],s['equity']*.0125)
+        with self.assertRaises(ValueError):
+            plan_entry(s,{},'BUY',NOW,1.0989)
 
-    def test_shared_margin_caps_fivefold_volume_before_order(self):
+    def test_shared_margin_caps_former_volume_before_order(self):
         s=snapshot()
         s['margin_per_unit']=.5
         plan=plan_entry(s,{},'BUY',NOW,1.0989)
@@ -152,8 +217,8 @@ class HourlyHedgeTests(unittest.TestCase):
                     self.assertEqual(journal.process_hourly('EURUSD','BUY',broker,NOW,True)['status'],
                                      'blocked')
                     self.assertEqual(len(broker.submitted),2)
-                    self.assertIsNone(should_close(a['plan'],{'upl':.99},NOW))
-                    self.assertEqual(should_close(a['plan'],{'upl':1.01},NOW),
+                    self.assertIsNone(should_close(a['plan'],{'upl':.039},NOW))
+                    self.assertEqual(should_close(a['plan'],{'upl':.04},NOW),
                                      'hourly_profit_target')
                     self.assertEqual(should_close(b['plan'],{'upl':-3},HOUR+3600),
                                      'hourly_window_end')
@@ -180,7 +245,7 @@ class HourlyHedgeTests(unittest.TestCase):
             finally:
                 journal.close()
 
-    def test_capital_adapter_confirms_both_legs_without_take_profit(self):
+    def test_capital_adapter_confirms_both_legs_without_stop_or_take_profit(self):
         with patch('smarttrader.trial.ACCOUNT_SHA256',
                    hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
             with tempfile.TemporaryDirectory() as directory:
@@ -201,7 +266,9 @@ class HourlyHedgeTests(unittest.TestCase):
                     posts=[x for x in transport.calls if x[0]=='POST' and x[1].endswith('/positions')]
                     self.assertEqual(len(posts),2)
                     self.assertTrue(all(b'profitLevel' not in x[2] for x in posts))
-                    self.assertTrue(all(b'stopLevel' in x[2] for x in posts))
+                    self.assertTrue(all(b'stopLevel' not in x[2] for x in posts))
+                    self.assertTrue(all(x['position']['stopLevel'] is None
+                                        for x in transport.positions.values()))
                 finally:
                     journal.close()
 

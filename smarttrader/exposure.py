@@ -107,7 +107,8 @@ def entry_limits(data, owned, *, direction, assessment, candle):
 def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, risk_multiplier=1):
     """No fixed position count; reserve every owned position across markets.
 
-    The aggregate 0.25% equity and 10% free-margin ceilings remain in place.
+    The aggregate sizing-reference and 10% free-margin ceilings remain in place.
+    Without a broker stop the reference is not a bound on actual loss.
     Quotes, conversions and contract factors for *each* existing market must
     come from a fresh authenticated broker snapshot; missing evidence blocks.
     """
@@ -161,13 +162,22 @@ def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, r
         fx, margin_fx = value(quote, 'quote_to_account'), value(quote, 'fx_rate')
         if ask < bid:
             raise ExposureError('Invalid portfolio executable spread')
-        size, fill, stop = value(pos, 'size'), value(pos, 'level'), value(pos, 'stopLevel')
+        size, fill = value(pos, 'size'), value(pos, 'level')
         leverage = value(pos, 'leverage')
         factor = max(value(quote, 'margin_factor'), value(plan, 'margin_factor'), Decimal(1)/leverage)
         conversion = max(fx, value(plan, 'quote_to_account'))
-        distance = max(fill-stop, bid-stop) if pos['direction']=='BUY' else max(stop-fill, stop-ask)
-        if distance <= 0:
-            raise ExposureError('Invalid existing stop distance')
+        if pos.get('stopLevel') is None and plan.get('risk_basis') == 'hourly_reference_unbounded' \
+                and plan.get('strategy') == 'hourly_hedge_v1':
+            reference = value(plan, 'sizing_reference_distance')
+            # Count an adverse move since fill in addition to the original
+            # reference; this is still only a sizing scenario, not maximum loss.
+            adverse = max(Decimal(0), fill-bid if pos['direction']=='BUY' else ask-fill)
+            distance = reference+adverse
+        else:
+            stop = value(pos, 'stopLevel')
+            distance = max(fill-stop, bid-stop) if pos['direction']=='BUY' else max(stop-fill, stop-ask)
+            if distance <= 0:
+                raise ExposureError('Invalid existing stop distance')
         risk = max(value(plan, 'planned_risk'), value(plan, 'actual_risk'), size*distance*conversion)
         margin = max(value(plan, 'required_margin'), value(plan, 'actual_margin'),
                      size*max(fill,ask)*factor*margin_fx)

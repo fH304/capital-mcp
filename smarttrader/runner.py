@@ -376,16 +376,37 @@ class Worker:
             plan=reconciled['owned'].get(deal)
             if not plan:
                 continue
-            quote=broker.market_quote(plan['epic'])
             protected=type(pos.get('stopLevel')) in (int,float) and math.isfinite(pos['stopLevel']) and pos['stopLevel']>0
-            view=PositionView(deal,True,pos['direction'],pos['stopLevel'] if protected else plan['stop_level'],
-                              quote['bid'],quote['ask'],quote['quote_time'],True,protected)
-            decision=exit_decision(view,self.clock(),state['daily']['stopped'])
-            if decision['action']=='hold' and plan.get('strategy')=='hourly_hedge_v1':
-                reason=should_close(plan,pos,self.clock())
-                if reason:
-                    decision=dict(action='close_intent',reason=reason)
-            elif decision['action']=='hold' and plan.get('target_level') is None:
+            if (self.config.strategy=='hourly_hedge'
+                    and plan.get('strategy')!='hourly_hedge_v1'):
+                decision=dict(action='close_intent',reason='superseded_trend_position')
+            elif plan.get('strategy')=='hourly_hedge_v1' and plan.get('risk_basis')=='hourly_reference_unbounded':
+                # The time exit must still be attempted after a restart or a
+                # stale price feed. A profit exit needs a fresh quote.
+                now=self.clock()
+                if state['daily']['stopped']:
+                    decision=dict(action='close_intent',reason='daily_loss_limit')
+                elif now>=plan['hour_start']+3600:
+                    decision=dict(action='close_intent',reason='hourly_window_end')
+                else:
+                    quote=broker.market_quote(plan['epic'])
+                    if not 0<=now-quote['quote_time']<=30:
+                        decision=dict(action='alert',reason='stale_quote_block_new_entries')
+                    else:
+                        reason=should_close(plan,pos,now)
+                        decision=(dict(action='close_intent',reason=reason) if reason
+                                  else dict(action='hold',reason=None))
+            else:
+                quote=broker.market_quote(plan['epic'])
+                view=PositionView(deal,True,pos['direction'],pos['stopLevel'] if protected else plan['stop_level'],
+                                  quote['bid'],quote['ask'],quote['quote_time'],True,protected)
+                decision=exit_decision(view,self.clock(),state['daily']['stopped'])
+                if decision['action']=='hold' and plan.get('strategy')=='hourly_hedge_v1':
+                    reason=should_close(plan,pos,self.clock())
+                    if reason:
+                        decision=dict(action='close_intent',reason=reason)
+            if (decision['action']=='hold' and plan.get('target_level') is None
+                    and plan.get('strategy')!='hourly_hedge_v1'):
                 try:
                     if self.trend_reversed(broker,deal,plan,pos['direction']):
                         decision=dict(action='close_intent',reason='confirmed_trend_reversal')
