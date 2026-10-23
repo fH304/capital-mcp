@@ -101,9 +101,13 @@ def plan_entry(snapshot, owned, direction, now, stop):
                          margin_fraction='.1',
                          **dict(inputs,min_size=1e-9,size_step=1e-9))['size']
     step = Decimal(str(snapshot['size_step']))
-    size = float((Decimal(str(base)) * MULTIPLIER / step).to_integral_value(rounding=ROUND_FLOOR) * step)
-    if size > snapshot['max_size'] or size < snapshot['min_size']:
-        raise ValueError('Fivefold size outside contract limits')
+    maximum=min(Decimal(str(base))*MULTIPLIER,
+                Decimal(str(limits['risk_budget']))/Decimal(str(loss*snapshot['quote_to_account'])),
+                Decimal(str(limits['margin_budget']))/Decimal(str(snapshot['margin_per_unit'])),
+                Decimal(str(snapshot['max_size'])))
+    size = float((maximum / step).to_integral_value(rounding=ROUND_FLOOR) * step)
+    if size < snapshot['min_size']:
+        raise ValueError('Broker minimum exceeds remaining shared risk or margin')
     risk = size*loss*snapshot['quote_to_account']
     margin = size*snapshot['margin_per_unit']
     if risk > limits['risk_budget'] + 1e-9 or margin > limits['margin_budget'] + 1e-9:

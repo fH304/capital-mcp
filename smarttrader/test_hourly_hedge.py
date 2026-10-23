@@ -130,6 +130,13 @@ class HourlyHedgeTests(unittest.TestCase):
         self.assertEqual(plan['size'],2000)
         self.assertLessEqual(plan['planned_risk'],s['equity']*.0125)
 
+    def test_shared_margin_caps_fivefold_volume_before_order(self):
+        s=snapshot()
+        s['margin_per_unit']=.5
+        plan=plan_entry(s,{},'BUY',NOW,1.0989)
+        self.assertLessEqual(plan['required_margin'],100)
+        self.assertGreaterEqual(plan['size'],s['min_size'])
+
     def test_journal_confirms_both_once_then_profit_or_time_closes(self):
         with patch('smarttrader.trial.ACCOUNT_SHA256',
                    hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
