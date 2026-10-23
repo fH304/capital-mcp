@@ -3,11 +3,13 @@ import json
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from .coordinator import DemoCoordinator
 from .capital import CapitalDemo
+from .daily import AdaptiveDailyRisk, DemoHourlyNoDailyGate
 from .hourly_hedge import hour_start, market_epics, plan_entry, should_close
 from .runner import Worker
 from .monitor import EntryGate
@@ -79,6 +81,39 @@ class FakeBroker:
 
 
 class HourlyHedgeTests(unittest.TestCase):
+    def test_hourly_demo_uses_no_daily_latch_even_after_old_policy_stopped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old=AdaptiveDailyRisk(directory+'/daily.sqlite',APPROVED_ACCOUNT,
+                                  {'EURUSD':'EURUSD'},selected_market_only=True)
+            try:
+                old(1000,NOW)
+                self.assertTrue(old(970,NOW)['stopped'])
+                worker=Worker.__new__(Worker)
+                worker.local=threading.local()
+                worker.config=SimpleNamespace(directory=Path(directory),account=APPROVED_ACCOUNT,
+                    symbols={'EURUSD':'EURUSD'},risk_mode='auto',strategy='hourly_hedge',
+                    limit=None,max_positions=0,technical_entries=True,decision_engine='rules')
+                class Broker:
+                    def __init__(self,daily):
+                        self.daily=daily
+                    def configure_entries(self,*args):
+                        pass
+                    def login(self):
+                        pass
+                worker.broker_factory=Broker
+                with patch('smarttrader.trial.ACCOUNT_SHA256',
+                           hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
+                    broker,journal=worker.resources()
+                try:
+                    self.assertIsInstance(broker.daily,DemoHourlyNoDailyGate)
+                    self.assertEqual(broker.daily(970,NOW)['remaining'],970)
+                    self.assertFalse(broker.daily(970,NOW)['stopped'])
+                    self.assertTrue(old(970,NOW)['stopped'])
+                finally:
+                    journal.close()
+            finally:
+                old.close()
+
     def test_worker_closes_unprotected_hourly_position_at_target_and_hour_end(self):
         with patch('smarttrader.trial.ACCOUNT_SHA256',
                    hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):

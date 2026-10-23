@@ -14,7 +14,7 @@ from pathlib import Path
 from .analysis import AnalysisClient, AnalysisError, validate_context, validate_recommendation
 from .capital import CapitalDemo, CapitalError, identifier
 from .coordinator import DemoCoordinator, EntryPreflightBlocked, CoordinationError
-from .daily import DailyRisk, AdaptiveDailyRisk
+from .daily import DailyRisk, AdaptiveDailyRisk, DemoHourlyNoDailyGate
 from .fx import ROUTES
 from .marketdata import MarketCollector
 from .monitor import EntryGate, Monitor, PositionView, exit_decision
@@ -320,8 +320,9 @@ class Worker:
     def resources(self):
         if not hasattr(self.local,'journal'):
             c=self.config
-            self.local.daily=(AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols,
-                                               selected_market_only=c.broad)
+            self.local.daily=(DemoHourlyNoDailyGate() if c.strategy=='hourly_hedge' else
+                              AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols,
+                                                selected_market_only=c.broad)
                               if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
             self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account,c.max_positions,
                                               allow_technical_entry=c.technical_entries,
@@ -545,7 +546,7 @@ class Worker:
                 break
             attempted+=1
             try:
-                if self.config.risk_mode=='auto':
+                if self.config.risk_mode=='auto' and self.config.strategy!='hourly_hedge':
                     # Adaptive daily-loss policy needs current closed candles.
                     from .candles import normalize_candles
                     rows=broker.prices(epic,'MINUTE_15',40)
@@ -946,6 +947,8 @@ def main():
             strategy_research='disabled' if config.decision_engine=='rules' else STRATEGY,
             strategy_execution=('hourly_two_sided_demo' if config.strategy=='hourly_hedge'
                                 else 'independent_hour_day_trends_demo'),
+            daily_loss_policy=('disabled_hourly_demo' if config.strategy=='hourly_hedge'
+                               else config.risk_mode),
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):

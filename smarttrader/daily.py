@@ -59,6 +59,18 @@ class DailyRisk:
             raise
 
 
+class DemoHourlyNoDailyGate:
+    """No daily loss latch for the explicitly selected demo hourly strategy.
+
+    Portfolio reference exposure and broker margin are still checked at entry.
+    This is not a bound on the loss of a position without a broker stop.
+    """
+    def __call__(self, equity, now):
+        observed=decimal(equity,'equity')
+        return dict(stopped=False,remaining=float(observed),ready=True,
+                    mode='hourly_demo_no_daily_loss_limit')
+
+
 class AdaptiveDailyRisk:
     """Deterministic experimental demo policy, not an optimized trading model.
 
