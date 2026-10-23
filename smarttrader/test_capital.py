@@ -105,6 +105,10 @@ class CapitalTests(unittest.TestCase):
         self.assertTrue(all(x[1].startswith(BASE) for x in self.transport.calls))
     def test_equity_does_not_double_count_floating_profit(self):
         self.assertEqual(self.adapter.snapshot('EURUSD')['equity'],1000)
+    def test_hourly_stop_uses_quote_precision_when_tick_size_is_absent(self):
+        snapshot=self.adapter.snapshot('EURUSD')
+        self.assertAlmostEqual(snapshot['tick_size'],.001)
+        self.assertGreater(self.adapter.hourly_stop(snapshot,'BUY'),0)
     def test_live_constructor_and_wrong_login_account_refused(self):
         with self.assertRaises(CapitalError):
             self.make(environment='live')

@@ -353,6 +353,15 @@ class CapitalDemo:
                     if rules[name]['unit'] != 'POINTS':
                         raise CapitalError('Unverified size rule unit')
                     return number(rules[name]['value'], True)
+                # scalingFactor is a display scale (typically 1), not the
+                # price increment. If tickSize is absent, use the displayed
+                # precision of both quotes and the stop-distance rule.
+                def displayed_step(raw):
+                    checked=number(raw,True)
+                    return float(Decimal(1).scaleb(Decimal(str(checked)).normalize().as_tuple().exponent))
+                tick = (number(snap['tickSize'],True) if 'tickSize' in snap else
+                        min(displayed_step(snap['bid']),displayed_step(snap['offer']),
+                            displayed_step(rules['minStopOrProfitDistance']['value'])))
                 daily = self.daily_controller(equity, self.clock())
                 if type(daily.get('stopped')) is not bool:
                     raise CapitalError('Invalid daily risk controller')
@@ -367,7 +376,7 @@ class CapitalDemo:
                             tradeable=(daily.get('ready',True) is True and snap['marketStatus']=='TRADEABLE' and 'REGULAR' in snap['marketModes']
                                        and number(snap['delayTime'])==0),
                             point_value=1, margin_factor=margin, margin_per_unit=ask*margin*fx['fx_rate'],
-                            tick_size=number(snap.get('tickSize',snap['scalingFactor']),True),
+                            tick_size=tick,
                             min_size=size_rule('minDealSize'), size_step=size_rule('minSizeIncrement'),
                             max_size=size_rule('maxDealSize'), open_risk=0, **fx)
                 data.update(preferences)
