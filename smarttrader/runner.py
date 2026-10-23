@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .analysis import AnalysisClient, AnalysisError, validate_context, validate_recommendation
 from .capital import CapitalDemo, CapitalError, identifier
-from .coordinator import DemoCoordinator, EntryPreflightBlocked
+from .coordinator import DemoCoordinator, EntryPreflightBlocked, CoordinationError
 from .daily import DailyRisk, AdaptiveDailyRisk
 from .fx import ROUTES
 from .marketdata import MarketCollector
@@ -527,6 +527,9 @@ class Worker:
         except (CapitalError,MarketDataError,ValueError,EntryPreflightBlocked) as error:
             self.emit('hourly_market_unavailable',epic=epic,
                       error_type=type(error).__name__,reason=str(error))
+            return True
+        except CoordinationError as error:
+            self.emit('hourly_order_review',epic=epic,reason=str(error))
             return True
 
     def broad_opportunities(self):

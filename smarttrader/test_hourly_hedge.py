@@ -225,6 +225,24 @@ class HourlyHedgeTests(unittest.TestCase):
             finally:
                 journal.close()
 
+    def test_hourly_uncertain_never_retries_signal_after_clean_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0)
+            try:
+                with journal.db:
+                    journal.db.execute('INSERT INTO smart_entries VALUES (?,?,?,?,?,?)',
+                        ('hourly-signal',APPROVED_ACCOUNT,'uncertain',
+                         json.dumps({'signal_candle':HOUR,'strategy':'hourly_hedge_v1'}),None,None))
+                state=dict(account_id=APPROVED_ACCOUNT,positions=[],working_orders=[],observed_at=NOW)
+                self.assertTrue(journal.reconcile(state,NOW)['unresolved'])
+                state['observed_at']=NOW+121
+                self.assertEqual(journal.reconcile(state,NOW+121)['historical_review_released'],1)
+                self.assertFalse(journal.unresolved())
+                self.assertEqual(journal.db.execute('SELECT signal,status FROM smart_entries').fetchone(),
+                                 ('hourly-signal','inactive_unverified'))
+            finally:
+                journal.close()
+
 
 if __name__=='__main__':
     unittest.main()

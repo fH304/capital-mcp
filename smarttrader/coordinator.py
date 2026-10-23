@@ -285,12 +285,14 @@ class DemoCoordinator:
             self.db.rollback()
             raise
         # No error/timeout is classified as rejection without broker evidence.
+        phase='submit'
         try:
             reference = broker.submit_entry(dict(plan))
             if not isinstance(reference, str) or not reference or len(reference)>256:
                 raise CoordinationError('Invalid order reference')
             self.db.execute('UPDATE smart_entries SET reference=? WHERE signal=?', (reference, signal))
             self.db.commit()
+            phase='confirm'
             confirmation = broker.confirm_entry(reference)
             keys = ('account_id', 'epic', 'direction', 'size', 'stop_level', 'target_level')
             if (not isinstance(confirmation, dict) or confirmation.get('status') != 'confirmed'
@@ -321,10 +323,12 @@ class DemoCoordinator:
             self.db.execute('UPDATE smart_entries SET status=? WHERE signal=?', ('blocked',signal))
             self.db.commit()
             return dict(status='blocked',reason=str(error))
-        except Exception:
+        except Exception as error:
             self.db.execute('UPDATE smart_entries SET status=? WHERE signal=?', ('uncertain', signal))
             self.db.commit()
-            raise CoordinationError('Order outcome uncertain; reconcile before further entries') from None
+            detail=(str(error) if type(error).__name__ in ('CapitalError','CoordinationError')
+                    else type(error).__name__)
+            raise CoordinationError('Order outcome uncertain at '+phase+': '+detail) from None
 
     def owned(self):
         return {deal:json.loads(plan) for deal,plan in self.db.execute(
@@ -381,8 +385,9 @@ class DemoCoordinator:
                     try:
                         plan=json.loads(raw)
                         candle=plan['signal_candle']
+                        minimum_age=(0 if plan.get('strategy')=='hourly_hedge_v1' else 3600)
                         if type(candle) not in (int,float) or not math.isfinite(candle) \
-                                or not 3600 < now-candle < 30*86400:
+                                or not minimum_age < now-candle < 30*86400:
                             continue
                     except (ValueError,KeyError,TypeError):
                         continue
