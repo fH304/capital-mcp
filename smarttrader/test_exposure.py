@@ -118,6 +118,7 @@ class PairTransport(PriceTransport):
         self.references={}
         self.sequence=0
         self.leverage=200
+        self.filled_leverage=None
         self.market_margin_factor=None
         self.hedging=True
         self.orders=[]
@@ -150,7 +151,8 @@ class PairTransport(PriceTransport):
             p=json.loads(request.data)
             fill=self.market['snapshot']['offer' if p['direction']=='BUY' else 'bid']
             self.positions[deal]=dict(position=dict(dealId=deal,currency='USD',contractSize=1,
-                  direction=p['direction'],size=p['size'],level=fill,leverage=self.leverage,
+                  direction=p['direction'],size=p['size'],level=fill,
+                  leverage=self.filled_leverage or self.leverage,
                   stopLevel=p['stopLevel'],profitLevel=p.get('profitLevel')),market=dict(epic=p['epic']))
             self.references[ref]=deal
             if self.fail_post: raise TimeoutError('transport outcome unknown')

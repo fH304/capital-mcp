@@ -346,6 +346,9 @@ class Worker:
         state=broker.account_state()
         previously_owned=journal.owned() if self.config.trial else {}
         reconciled=journal.reconcile(state,self.clock())
+        if reconciled['broker_confirmation_recovered']:
+            self.emit('broker_confirmation_recovered',
+                      count=reconciled['broker_confirmation_recovered'])
         if reconciled['historical_review_released']:
             self.emit('historical_order_review_released',
                       count=reconciled['historical_review_released'],

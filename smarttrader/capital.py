@@ -559,8 +559,10 @@ class CapitalDemo:
                         or risk>expected['_risk_cap']+1e-9 or margin>expected['_margin_cap']+1e-9):
                     raise CapitalError('Actual position differs from reserved order')
                 if self.max_positions != 1:
-                    if number(pos.get('leverage'), True) != expected['leverage']:
-                        raise CapitalError('Actual leverage differs from reserved entry')
+                    actual_leverage=number(pos.get('leverage'), True)
+                    if (actual_leverage>expected['leverage']
+                            or expected['_margin_factor']+1e-9<1/actual_leverage):
+                        raise CapitalError('Actual leverage exceeds verified margin protection')
                     result['leverage'] = pos['leverage']
                     if self.max_positions == 0:
                         existing_risk=existing_margin=0

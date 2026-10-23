@@ -304,8 +304,12 @@ class DemoCoordinator:
                 if key in confirmation:
                     plan[key]=confirmation[key]
             if self.max_positions != 1:
-                if confirmation.get('leverage') != plan['leverage']:
-                    raise CoordinationError('Confirmed leverage differs from reserved entry')
+                actual_leverage=confirmation.get('leverage')
+                if (type(actual_leverage) not in (int,float) or not math.isfinite(actual_leverage)
+                        or actual_leverage<=0 or actual_leverage>plan['leverage']
+                        or plan['margin_factor']+1e-9<1/actual_leverage):
+                    raise CoordinationError('Confirmed leverage exceeds reserved protection')
+                plan['leverage']=actual_leverage
                 for key in ('existing_risk','existing_margin'):
                     plan[key]=confirmation[key]
                 plan['combined_actual_risk']=plan['existing_risk']+plan['actual_risk']
@@ -357,6 +361,7 @@ class DemoCoordinator:
         if len(actual)!=len(state['positions']):
             raise CoordinationError('Duplicate position identifiers')
         released=0
+        recovered=0
         with self.db:
             for deal in owned.keys()-actual.keys():
                 # Broker stop/target/external close: do not invent a realized P/L.
@@ -377,30 +382,75 @@ class DemoCoordinator:
             if (type(now) in (int,float) and math.isfinite(now)
                     and type(state.get('observed_at')) in (int,float)
                     and 0<=now-state['observed_at']<=30
-                    and state.get('working_orders')==[]
-                    and set(actual)==set(owned)&set(actual)):
-                for signal,raw in self.db.execute(
-                    "SELECT signal,plan FROM smart_entries WHERE account=? AND status='uncertain'",
+                    and state.get('working_orders')==[]):
+                # A confirmation can fail after the broker has opened a deal.
+                # A unique exact broker reference and conservative fill checks
+                # recover ownership so the hourly exit continues to run.
+                for signal,raw,reference in self.db.execute(
+                    "SELECT signal,plan,reference FROM smart_entries WHERE account=? AND status='uncertain'",
                     (self.account_id,)):
+                    if not reference:
+                        continue
+                    matches=[item for deal,item in actual.items()
+                             if deal not in owned and item['position'].get('dealReference')==reference]
+                    if len(matches)!=1:
+                        continue
                     try:
                         plan=json.loads(raw)
-                        candle=plan['signal_candle']
-                        minimum_age=(0 if plan.get('strategy')=='hourly_hedge_v1' else 3600)
-                        if type(candle) not in (int,float) or not math.isfinite(candle) \
-                                or not minimum_age < now-candle < 30*86400:
+                        item=matches[0]
+                        pos,market=item['position'],item['market']
+                        leverage=pos['leverage']
+                        risk=(pos['level']-pos['stopLevel'] if pos['direction']=='BUY'
+                              else pos['stopLevel']-pos['level'])*pos['size']*plan['quote_to_account']
+                        margin=pos['level']*pos['size']*plan['margin_factor']*plan['fx_rate']
+                        valid=(plan.get('strategy')=='hourly_hedge_v1'
+                               and market['epic']==plan['epic']
+                               and pos['direction']==plan['direction']
+                               and pos['size']==plan['size']
+                               and pos['stopLevel']==plan['stop_level']
+                               and pos.get('profitLevel')==plan['target_level']
+                               and pos['currency']==plan['quote_currency']
+                               and pos['contractSize']==1
+                               and type(leverage) in (int,float) and math.isfinite(leverage)
+                               and 0<leverage<=plan['leverage']
+                               and plan['margin_factor']+1e-9>=1/leverage
+                               and 0<risk<=plan['portfolio_risk_limit']-plan['existing_risk']+1e-9
+                               and 0<margin<=plan['required_margin']*1.05+1)
+                        if not valid:
                             continue
-                    except (ValueError,KeyError,TypeError):
+                        plan.update(leverage=leverage,actual_risk=risk,actual_margin=margin,
+                                    combined_actual_risk=plan['existing_risk']+risk,
+                                    combined_actual_margin=plan['existing_margin']+margin,
+                                    recovered_from_broker_snapshot=True)
+                        self.db.execute('UPDATE smart_entries SET status=?,deal=?,plan=? WHERE signal=?',
+                                        ('confirmed',pos['dealId'],json.dumps(plan,allow_nan=False),signal))
+                        owned[pos['dealId']]=plan
+                        recovered+=1
+                    except (KeyError,TypeError,ValueError,ZeroDivisionError,OverflowError):
                         continue
-                    row=self.db.execute('SELECT first_seen FROM smart_uncertain_reviews '
-                                        'WHERE signal=? AND account=?',(signal,self.account_id)).fetchone()
-                    if row is None:
-                        self.db.execute('INSERT INTO smart_uncertain_reviews VALUES (?,?,?)',
-                                        (signal,self.account_id,now))
-                    elif 120<=now-row[0]<=7*86400:
-                        self.db.execute("UPDATE smart_entries SET status='inactive_unverified' "
-                                        "WHERE signal=? AND account=? AND status='uncertain'",
-                                        (signal,self.account_id))
-                        released+=1
+                if set(actual)==set(owned)&set(actual):
+                    for signal,raw in self.db.execute(
+                        "SELECT signal,plan FROM smart_entries WHERE account=? AND status='uncertain'",
+                        (self.account_id,)):
+                        try:
+                            plan=json.loads(raw)
+                            candle=plan['signal_candle']
+                            minimum_age=(0 if plan.get('strategy')=='hourly_hedge_v1' else 3600)
+                            if type(candle) not in (int,float) or not math.isfinite(candle) \
+                                    or not minimum_age < now-candle < 30*86400:
+                                continue
+                        except (ValueError,KeyError,TypeError):
+                            continue
+                        row=self.db.execute('SELECT first_seen FROM smart_uncertain_reviews '
+                                            'WHERE signal=? AND account=?',(signal,self.account_id)).fetchone()
+                        if row is None:
+                            self.db.execute('INSERT INTO smart_uncertain_reviews VALUES (?,?,?)',
+                                            (signal,self.account_id,now))
+                        elif 120<=now-row[0]<=7*86400:
+                            self.db.execute("UPDATE smart_entries SET status='inactive_unverified' "
+                                            "WHERE signal=? AND account=? AND status='uncertain'",
+                                            (signal,self.account_id))
+                            released+=1
         changed = []
         for deal in owned.keys() & actual.keys():
             pos, market = actual[deal]['position'],actual[deal]['market']
@@ -410,7 +460,8 @@ class DemoCoordinator:
                 changed.append(deal)
         return dict(owned={k:v for k,v in owned.items() if k in actual and k not in changed},
                     unknown=sorted(actual.keys()-owned.keys()),changed=changed,
-                    unresolved=self.unresolved(),historical_review_released=released)
+                    unresolved=self.unresolved(),historical_review_released=released,
+                    broker_confirmation_recovered=recovered)
 
     def close_position(self, deal, reason, broker, armed=False):
         plan=self.owned().get(deal)

@@ -205,6 +205,28 @@ class HourlyHedgeTests(unittest.TestCase):
                 finally:
                     journal.close()
 
+    def test_adapter_accepts_lower_actual_leverage_with_verified_margin(self):
+        with patch('smarttrader.trial.ACCOUNT_SHA256',
+                   hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
+            with tempfile.TemporaryDirectory() as directory:
+                journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0,
+                                        allow_technical_entry=True,allow_newsless_technical=True)
+                transport=PairTransport(lambda:NOW)
+                transport.account=APPROVED_ACCOUNT
+                transport.market_margin_factor=1
+                transport.filled_leverage=100
+                broker=CapitalDemo(key='k',user='u',password='p',account_id=APPROVED_ACCOUNT,
+                                   daily_controller=lambda equity,now:dict(stopped=False,remaining=10),
+                                   armed=True,opener=transport,clock=lambda:NOW,sleep=lambda _:None)
+                broker.configure_entries(0,journal.owned)
+                broker.login()
+                try:
+                    result=journal.process_hourly('EURUSD','BUY',broker,NOW,True)
+                    self.assertEqual(result['status'],'confirmed')
+                    self.assertEqual(result['plan']['leverage'],100)
+                finally:
+                    journal.close()
+
     def test_stale_uncertain_entry_releases_gate_only_after_two_clean_snapshots(self):
         with tempfile.TemporaryDirectory() as directory:
             journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0)
@@ -240,6 +262,29 @@ class HourlyHedgeTests(unittest.TestCase):
                 self.assertFalse(journal.unresolved())
                 self.assertEqual(journal.db.execute('SELECT signal,status FROM smart_entries').fetchone(),
                                  ('hourly-signal','inactive_unverified'))
+            finally:
+                journal.close()
+
+    def test_exact_broker_reference_recovers_hourly_fill_with_lower_leverage(self):
+        s=snapshot()
+        s.update(margin_factor=.01,margin_per_unit=.011001)
+        plan=plan_entry(s,{},'BUY',NOW,1.0989)
+        held=dict(position=dict(dealId='deal-new',dealReference='ref-new',
+                   direction='BUY',size=plan['size'],level=1.1001,
+                   stopLevel=plan['stop_level'],profitLevel=None,leverage=100,
+                   currency='USD',contractSize=1),market=dict(epic='EURUSD'))
+        with tempfile.TemporaryDirectory() as directory:
+            journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0)
+            try:
+                with journal.db:
+                    journal.db.execute('INSERT INTO smart_entries VALUES (?,?,?,?,?,?)',
+                        ('signal',APPROVED_ACCOUNT,'uncertain',json.dumps(plan),None,'ref-new'))
+                state=dict(account_id=APPROVED_ACCOUNT,positions=[held],working_orders=[],observed_at=NOW)
+                result=journal.reconcile(state,NOW)
+                self.assertEqual(result['broker_confirmation_recovered'],1)
+                self.assertEqual(result['unknown'],[])
+                self.assertEqual(result['owned']['deal-new']['leverage'],100)
+                self.assertFalse(result['unresolved'])
             finally:
                 journal.close()
 
