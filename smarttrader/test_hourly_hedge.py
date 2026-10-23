@@ -1,6 +1,7 @@
 import hashlib
 import json
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from .coordinator import DemoCoordinator
 from .capital import CapitalDemo
 from .hourly_hedge import hour_start, market_epics, plan_entry, should_close
 from .runner import Worker
+from .monitor import EntryGate
 from .test_exposure import PairTransport
 from .trial import APPROVED_ACCOUNT
 
@@ -80,7 +82,7 @@ class HourlyHedgeTests(unittest.TestCase):
     def test_worker_closes_unprotected_hourly_position_at_target_and_hour_end(self):
         with patch('smarttrader.trial.ACCOUNT_SHA256',
                    hashlib.sha256(APPROVED_ACCOUNT.encode()).hexdigest()):
-            for target,when,expected in ((.04,NOW,'hourly_profit_target'),
+            for target,when,expected in ((.08,NOW,'hourly_profit_target'),
                                          (-2,HOUR+3600,'hourly_window_end')):
                 with self.subTest(expected=expected),tempfile.TemporaryDirectory() as directory:
                     journal=DemoCoordinator(directory+'/orders.sqlite',APPROVED_ACCOUNT,0,
@@ -138,6 +140,42 @@ class HourlyHedgeTests(unittest.TestCase):
                 self.assertEqual(broker.closed,['old-deal'])
             finally:
                 journal.close()
+
+    def test_hourly_sweep_attempts_both_sides_of_all_markets_once_per_hour(self):
+        worker=Worker.__new__(Worker)
+        current=[NOW]
+        events=[]
+        orders=[]
+        worker.clock=lambda:current[0]
+        worker.hourly_scan_hour=None
+        worker.config=SimpleNamespace(symbols={'EURUSD':'EURUSD','GBPUSD':'GBPUSD',
+                                                'GOLD':'GOLD'},risk_mode='fixed',armed=True)
+        worker.gate=EntryGate({'positions':30,'opportunities':3600})
+        worker.order_lock=threading.RLock()
+        worker.trial_active=lambda:True
+        worker.emit=lambda event,**fields:events.append((event,fields))
+        worker.positions=lambda:orders.append(('close_due',current[0])) or True
+        worker.resources=lambda:(object(),SimpleNamespace(process_hourly=lambda epic,direction,*args,**kwargs:
+                            orders.append((epic,direction)) or {'status':'confirmed'}))
+        worker.entry_state=lambda broker,journal:(dict(daily=dict(stopped=False,ready=True)),{})
+        worker.capacity_reason=lambda epic,state,reconciled:None
+
+        self.assertTrue(worker.hourly_opportunities())
+        self.assertEqual(orders,[('close_due',NOW),('EURUSD','BUY'),('EURUSD','SELL'),
+                                 ('GBPUSD','BUY'),('GBPUSD','SELL'),('GOLD','BUY'),('GOLD','SELL')])
+        self.assertTrue(worker.hourly_opportunities())
+        self.assertEqual(len(orders),7)
+        current[0]+=3600
+        self.assertTrue(worker.hourly_opportunities())
+        self.assertEqual(orders[7],('close_due',NOW+3600))
+        self.assertEqual(orders[8:],orders[1:7])
+        self.assertEqual(len([event for event,_ in events if event=='hourly_sweep_finished']),2)
+        current[0]+=3600
+        worker.entry_state=lambda broker,journal:(dict(daily=dict(stopped=True,ready=False)),{})
+        self.assertTrue(worker.hourly_opportunities())
+        self.assertEqual(len(orders),15)  # due positions checked, but no new entries
+        self.assertIn('daily_loss_limit',[fields.get('reason') for event,fields in events
+                                           if event=='hourly_sweep_deferred'])
 
     def test_entry_uses_clock_after_broker_snapshot_for_quote_freshness(self):
         broker=FakeBroker()
@@ -217,8 +255,8 @@ class HourlyHedgeTests(unittest.TestCase):
                     self.assertEqual(journal.process_hourly('EURUSD','BUY',broker,NOW,True)['status'],
                                      'blocked')
                     self.assertEqual(len(broker.submitted),2)
-                    self.assertIsNone(should_close(a['plan'],{'upl':.039},NOW))
-                    self.assertEqual(should_close(a['plan'],{'upl':.04},NOW),
+                    self.assertIsNone(should_close(a['plan'],{'upl':.079},NOW))
+                    self.assertEqual(should_close(a['plan'],{'upl':.08},NOW),
                                      'hourly_profit_target')
                     self.assertEqual(should_close(b['plan'],{'upl':-3},HOUR+3600),
                                      'hourly_window_end')

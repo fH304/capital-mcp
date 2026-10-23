@@ -25,7 +25,7 @@ from .spreadstudy import SpreadStudy
 from .strategy import active_setup
 from .candles import MarketDataError
 from .trend_following import trend_candles, reversal_exit
-from .hourly_hedge import should_close
+from .hourly_hedge import hour_start, should_close
 from .strategy_study import StrategyStudy
 from .institutional import FRAMEWORK, STRATEGY, InstitutionalStudy, market_brief
 from .trial import (is_approved_account, MODEL as TRIAL_MODEL, TrialBudget, TrialStopped,
@@ -167,7 +167,8 @@ class Worker:
         self.config,self.clock,self.emit=config,clock,emit
         config.directory.mkdir(parents=True,exist_ok=True)
         self.local=threading.local()
-        self.gate=EntryGate({'positions':30,'opportunities':120} if config.decision_engine=='rules' else None)
+        self.gate=EntryGate({'positions':30,'opportunities':3600 if config.strategy=='hourly_hedge' else 120}
+                            if config.decision_engine=='rules' else None)
         self.feed_lock=threading.Lock()
         self.order_lock=threading.RLock()
         self.articles={}
@@ -178,6 +179,7 @@ class Worker:
         self.broker_factory=broker_factory
         self.ai_factory,self.news_factory=ai_factory,news_factory
         self.rotation=0
+        self.hourly_scan_hour=None
         self.candidates={}
         self.trend_exit_probe={}
         self.trial_stop_logged=False
@@ -518,44 +520,66 @@ class Worker:
         return self.evaluate(epic,context,articles,state,reconciled,broker,journal)
 
     def hourly_opportunities(self):
-        """Rotate account-visible markets, one BUY and SELL each UTC hour."""
+        """Attempt both directions on every eligible market once each UTC hour."""
         epics=list(self.config.symbols)
-        epic=epics[self.rotation%len(epics)]
-        self.rotation+=1
+        sweep_hour=hour_start(self.clock())
+        if self.hourly_scan_hour==sweep_hour:
+            return True
+        # Close the previous candle's owned positions before reserving any
+        # entries for the new candle. Retry the sweep if reconciliation fails.
+        if not self.positions():
+            self.emit('hourly_sweep_deferred',hour_start=sweep_hour,reason='account_review_required')
+            return False
+        self.gate.success('positions',self.clock())
+        self.gate.success('opportunities',self.clock())
         broker,journal=self.resources()
-        try:
-            # Adaptive daily-loss policy still needs current closed candles.
-            from .candles import normalize_candles
-            rows=broker.prices(epic,'MINUTE_15',40)
-            frame=normalize_candles(rows,'MINUTE_15',self.clock())
-            if self.config.risk_mode=='auto':
-                self.local.daily.update_market(epic,frame,self.clock())
-                self.local.daily.activate(epic)
-            state,reconciled=self.entry_state(broker,journal)
-            self.gate.stopped(state['daily']['stopped'])
-            reason=self.capacity_reason(epic,state,reconciled)
-            if reason or not state['daily'].get('ready',True) or not self.gate.may_enter(self.clock()):
-                self.emit('hourly_entry_blocked',epic=epic,
-                          reason=reason or 'daily_or_feed_gate')
-                return True
-            # Sequential broker orders are the only safe way to independently
-            # confirm each leg; the second can be rejected by shared limits.
-            for direction in ('BUY','SELL'):
-                if not self.trial_active():
+        state,_=self.entry_state(broker,journal)
+        self.hourly_scan_hour=sweep_hour
+        if state['daily']['stopped']:
+            self.emit('hourly_sweep_deferred',hour_start=sweep_hour,reason='daily_loss_limit')
+            return True
+        self.emit('hourly_sweep_started',hour_start=sweep_hour,markets=len(epics))
+        attempted=0
+        for epic in epics:
+            if hour_start(self.clock())!=sweep_hour or not self.trial_active():
+                break
+            attempted+=1
+            try:
+                if self.config.risk_mode=='auto':
+                    # Adaptive daily-loss policy needs current closed candles.
+                    from .candles import normalize_candles
+                    rows=broker.prices(epic,'MINUTE_15',40)
+                    frame=normalize_candles(rows,'MINUTE_15',self.clock())
+                    self.local.daily.update_market(epic,frame,self.clock())
+                    self.local.daily.activate(epic)
+                state,reconciled=self.entry_state(broker,journal)
+                self.gate.stopped(state['daily']['stopped'])
+                if state['daily']['stopped']:
+                    self.emit('hourly_sweep_deferred',hour_start=sweep_hour,reason='daily_loss_limit')
                     break
-                with self.order_lock:
-                    result=journal.process_hourly(epic,direction,broker,
-                                                  now=self.clock(),armed=self.config.armed)
-                self.emit('hourly_entry_'+result['status'],epic=epic,direction=direction,
-                          **{k:v for k,v in result.items() if k not in ('status','plan')})
-            return True
-        except (CapitalError,MarketDataError,ValueError,EntryPreflightBlocked) as error:
-            self.emit('hourly_market_unavailable',epic=epic,
-                      error_type=type(error).__name__,reason=str(error))
-            return True
-        except CoordinationError as error:
-            self.emit('hourly_order_review',epic=epic,reason=str(error))
-            return True
+                reason=self.capacity_reason(epic,state,reconciled)
+                if reason or not state['daily'].get('ready',True) or not self.gate.may_enter(self.clock()):
+                    self.emit('hourly_entry_blocked',epic=epic,
+                              reason=reason or 'daily_or_feed_gate')
+                    continue
+                # Each broker order must be confirmed separately. A shared
+                # account or broker limit may reject the second direction.
+                for direction in ('BUY','SELL'):
+                    if hour_start(self.clock())!=sweep_hour or not self.trial_active():
+                        break
+                    with self.order_lock:
+                        result=journal.process_hourly(epic,direction,broker,
+                                                      now=self.clock(),armed=self.config.armed)
+                    self.emit('hourly_entry_'+result['status'],epic=epic,direction=direction,
+                              **{k:v for k,v in result.items() if k not in ('status','plan')})
+            except (CapitalError,MarketDataError,ValueError,EntryPreflightBlocked) as error:
+                self.emit('hourly_market_unavailable',epic=epic,
+                          error_type=type(error).__name__,reason=str(error))
+            except CoordinationError as error:
+                self.emit('hourly_order_review',epic=epic,reason=str(error))
+        self.emit('hourly_sweep_finished',hour_start=sweep_hour,
+                  markets=len(epics),attempted=attempted)
+        return True
 
     def broad_opportunities(self):
         broker,journal=self.resources()
@@ -925,7 +949,8 @@ def main():
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:
             for name in ('positions','news','opportunities'):
-                repeats=len(config.symbols) if config.broad and name=='opportunities' else 1
+                repeats=(len(config.symbols) if config.broad and config.strategy!='hourly_hedge'
+                         and name=='opportunities' else 1)
                 for i in range(repeats):
                     if repeats>1 and i==repeats-1:
                         if worker.job('positions')():
@@ -942,7 +967,8 @@ def main():
         for sig in (signal.SIGTERM,signal.SIGINT):
             signal.signal(sig,lambda *_:stop.set())
         monitor=Monitor(worker.job('positions'),worker.job('opportunities'),worker.job('news'),log,
-                        gate=worker.gate,intervals=dict(positions=10,opportunities=5 if config.broad else 60,news=60))
+                        gate=worker.gate,intervals=dict(positions=10,
+                        opportunities=5 if config.broad or config.strategy=='hourly_hedge' else 60,news=60))
         monitor.start()
         stop.wait()
         monitor.stop()

@@ -15,7 +15,7 @@ from .sizing import SizingError, size_position
 NAME_METALS = re.compile(r'\b(gold|silver|platinum|palladium|copper|aluminium|aluminum|nickel|zinc)\b', re.I)
 FOCUS = {'USD', 'JPY', 'GBP', 'NZD'}
 MULTIPLIER = 1
-TARGET_USD = .04
+TARGET_USD = .08
 
 
 def hour_start(now):
