@@ -13,7 +13,8 @@ from pathlib import Path
 from .analysis import validate_recommendation
 from .policy import assessed_size
 from .sizing import size_position, SizingError
-from .exposure import entry_limits, portfolio_entry_limits, ExposureError
+from .exposure import (entry_limits, portfolio_entry_limits, ExposureError,
+                       FAST_AI_ENTRY_FRACTION, FAST_AI_PORTFOLIO_FRACTION)
 from .trial import TrialEntryBlocked, is_approved_account
 
 
@@ -111,12 +112,14 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
         try:
             candle = context['timeframes']['MINUTE_15']['candles'][-1]['t']
             fresh(candle+900, now, 900, 'closed entry candle')
-            limits = portfolio_entry_limits(snapshot,owned,candle=candle,now=now)
+            fast_ai = current.get('strategy_policy') == 'fast_ai_m15'
+            limits = portfolio_entry_limits(snapshot,owned,candle=candle,now=now,fast_ai=fast_ai)
         except (KeyError, IndexError, TypeError, ExposureError, ValueError) as error:
             raise PairEntryBlocked(str(error)) from None
         inputs.update(open_risk=limits['existing_risk'],
                       daily_remaining_risk=limits['daily_remaining_risk'],
-                      risk_fraction='0.0005',portfolio_fraction='0.0025',
+                      risk_fraction=str(FAST_AI_ENTRY_FRACTION if fast_ai else '0.0005'),
+                      portfolio_fraction=str(FAST_AI_PORTFOLIO_FRACTION if fast_ai else '0.0025'),
                       margin_fraction=limits['margin_fraction'])
     if max_positions == 0:
         sizing = size_position(stop_distance=distance, spread=ask-bid, **inputs)

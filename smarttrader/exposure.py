@@ -12,6 +12,8 @@ TRADE_FRACTION = Decimal('0.00125')
 PAIR_FRACTION = Decimal('0.0025')
 MARGIN_FRACTION = Decimal('0.1')
 PORTFOLIO_ENTRY_FRACTION = Decimal('0.0005')
+FAST_AI_ENTRY_FRACTION = Decimal('0.05')
+FAST_AI_PORTFOLIO_FRACTION = Decimal('0.25')
 
 
 class ExposureError(ValueError):
@@ -104,7 +106,8 @@ def entry_limits(data, owned, *, direction, assessment, candle):
                 existing_positions=len(positions))
 
 
-def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, risk_multiplier=1):
+def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, risk_multiplier=1,
+                           fast_ai=False):
     """No fixed position count; reserve every owned position across markets.
 
     The aggregate sizing-reference and 10% free-margin ceilings remain in place.
@@ -114,6 +117,8 @@ def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, r
     """
     if risk_multiplier not in (1, 5) or (risk_multiplier == 5 and hourly_direction not in ('BUY','SELL')):
         raise ExposureError('Invalid portfolio risk policy')
+    if fast_ai and (risk_multiplier != 1 or hourly_direction is not None):
+        raise ExposureError('Fast AI and hourly risk policies cannot be combined')
     equity, available = value(data, 'equity'), value(data, 'free_margin')
     daily = value(data, 'daily_remaining_risk', True)
     positions, quotes = data.get('positions'), data.get('position_quotes')
@@ -186,8 +191,9 @@ def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, r
         open_margin += margin
         components.append(dict(risk=float(risk),margin=float(margin),
                                quote_currency=pos['currency'],quote_to_account=float(fx),fx_rate=float(margin_fx)))
-    cap = baseline*PAIR_FRACTION*risk_multiplier
-    risk_budget = min(equity*PORTFOLIO_ENTRY_FRACTION*risk_multiplier,
+    cap = baseline*(FAST_AI_PORTFOLIO_FRACTION if fast_ai else PAIR_FRACTION*risk_multiplier)
+    entry_fraction = FAST_AI_ENTRY_FRACTION if fast_ai else PORTFOLIO_ENTRY_FRACTION*risk_multiplier
+    risk_budget = min(equity*entry_fraction,
                       cap-open_risk, daily-open_risk)
     margin_limit = available*MARGIN_FRACTION
     margin_budget = margin_limit-open_margin

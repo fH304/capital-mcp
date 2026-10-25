@@ -14,7 +14,8 @@ from pathlib import Path
 from .analysis import AnalysisClient, AnalysisError, validate_context, validate_recommendation
 from .capital import CapitalDemo, CapitalError, identifier
 from .coordinator import DemoCoordinator, EntryPreflightBlocked, CoordinationError
-from .daily import DailyRisk, AdaptiveDailyRisk, DemoHourlyNoDailyGate
+from .daily import DailyRisk, AdaptiveDailyRisk, DemoHourlyNoDailyGate, DemoFastAINoDailyGate
+from .exposure import FAST_AI_ENTRY_FRACTION, FAST_AI_PORTFOLIO_FRACTION
 from .fx import ROUTES
 from .marketdata import MarketCollector
 from .monitor import EntryGate, Monitor, PositionView, exit_decision
@@ -82,6 +83,9 @@ class Config:
             raise ValueError('SMART_AI_FAST must be 0 or 1')
         if self.fast_ai and not (self.trial and is_approved_account(self.account)):
             raise ValueError('Fast AI is restricted to the approved demo trial')
+        if self.fast_ai:
+            self.risk_mode='fast_ai_no_daily_cap'
+            self.limit=None
         self.decision_engine=env.get('SMART_DECISION_ENGINE',
                                      'ai' if self.fast_ai else 'rules' if self.trial else 'ai')
         if self.fast_ai:
@@ -337,13 +341,14 @@ class Worker:
     def resources(self):
         if not hasattr(self.local,'journal'):
             c=self.config
-            self.local.daily=(DemoHourlyNoDailyGate() if c.strategy=='hourly_hedge' else
+            self.local.daily=(DemoFastAINoDailyGate() if getattr(c,'fast_ai',False) else
+                              DemoHourlyNoDailyGate() if c.strategy=='hourly_hedge' else
                               AdaptiveDailyRisk(str(c.directory/'daily.sqlite'),c.account,c.symbols,
                                                 selected_market_only=c.broad)
                               if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
             self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account,c.max_positions,
                                               allow_technical_entry=c.technical_entries,
-                                              allow_newsless_technical=c.decision_engine=='rules' or c.fast_ai)
+                                              allow_newsless_technical=c.decision_engine=='rules' or getattr(c,'fast_ai',False))
         if not getattr(self.local,'broker',None):
             c=self.config
             broker=(self.broker_factory(self.local.daily) if self.broker_factory else
@@ -978,7 +983,9 @@ def main():
             currency_conversion='USD_broker_quotes',conversion_currencies=sorted(ROUTES),
             spread_study='observe_only_historical_threshold_comparison',spread_policy=SPREAD_POLICY,
             pair_entries=config.max_positions if config.max_positions else None,
-            pair_risk_fraction=.0025 if config.max_positions!=1 else .00125,
+            pair_risk_fraction=(float(FAST_AI_PORTFOLIO_FRACTION) if config.fast_ai else
+                                .0025 if config.max_positions!=1 else .00125),
+            entry_risk_fraction=float(FAST_AI_ENTRY_FRACTION) if config.fast_ai else None,
             entry_policy=('journal_owned_portfolio_no_count_limit' if config.max_positions==0 else
                           'staged_owned_same_pair' if config.max_positions==2 else 'flat_only'),
             leverage_policy='broker_current_no_probability_increase',
@@ -987,7 +994,8 @@ def main():
             strategy_execution=('ai_fast_m15_demo' if config.fast_ai else
                                 'hourly_two_sided_demo' if config.strategy=='hourly_hedge'
                                 else 'independent_hour_day_trends_demo'),
-            daily_loss_policy=('disabled_hourly_demo' if config.strategy=='hourly_hedge'
+            daily_loss_policy=('disabled_fast_ai_demo' if config.fast_ai else
+                               'disabled_hourly_demo' if config.strategy=='hourly_hedge'
                                else config.risk_mode),
             trial_ledger_guard='original_or_reviewed_provider_checkpoint',state_directory=str(config.directory))
         if args.once:

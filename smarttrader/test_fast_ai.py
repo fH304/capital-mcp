@@ -2,8 +2,10 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from .analysis import AnalysisClient, AnalysisError, validate_recommendation
+from .capital import CapitalDemo
 from .coordinator import plan_entry
 from .evidence import technical_evidence
 from .fast_ai import setup
@@ -68,13 +70,19 @@ class FastAITests(unittest.TestCase):
         data = snapshot()
         data.update(account_id=APPROVED_ACCOUNT, bid=ctx['bid'], ask=ctx['ask'],
                     hedging_mode=True, leverage=200, margin_factor=.005, fx_rate=1,
-                    quote_currency='USD', conversion_time=NOW, position_quotes={})
+                    quote_currency='USD', conversion_time=NOW, position_quotes={},
+                    daily_remaining_risk=1000, margin_per_unit=.000001, max_size=1000000)
         plan = plan_entry(rec,ctx,data,NOW,owned={},max_positions=0,
                           allow_technical_entry=True,allow_newsless_technical=True)
         self.assertEqual((plan['strategy'],plan['stop_level'],plan['target_level']),
                          ('ai_fast_m15_v1',candidate['stop_level'],candidate['target_level']))
-        self.assertLessEqual(plan['planned_risk'],.5)
-        self.assertLessEqual(plan['combined_planned_risk'],2.5)
+        self.assertAlmostEqual(plan['planned_risk'],50,places=2)
+        self.assertEqual(plan['portfolio_risk_limit'],250)
+        self.assertLessEqual(plan['combined_planned_risk'],250)
+        # Broker preflight must use the same strategy-specific caps, not the
+        # older generic portfolio limits when it refreshes the account.
+        broker = SimpleNamespace(max_positions=0,ownership=lambda:{},clock=lambda:NOW)
+        self.assertEqual(CapitalDemo._pair_limits(broker,data,plan)['portfolio_risk_limit'],250)
 
     def test_new_ai_grant_uses_existing_verified_trial_and_no_extra_budget(self):
         authorize_test_account(self)
@@ -135,6 +143,7 @@ class FastAITests(unittest.TestCase):
             self.assertEqual((config.strategy, config.decision_engine, config.model),
                              ('ai_fast', 'ai', MODEL))
             self.assertEqual(config.max_positions,0)
+            self.assertEqual(config.risk_mode,'fast_ai_no_daily_cap')
             calls = []
             class Analyst:
                 def analyze(self, context):
@@ -167,6 +176,7 @@ class FastAITests(unittest.TestCase):
                 worker.broker_factory = lambda daily: Broker()
                 _, journal = worker.resources()
                 self.assertTrue(journal.allow_newsless_technical)
+                self.assertEqual(worker.local.daily(1000,now)['remaining'],1000)
             finally:
                 for name in ('trial','ai','schedule','journal','daily'):
                     obj = getattr(worker.local,name,None)
