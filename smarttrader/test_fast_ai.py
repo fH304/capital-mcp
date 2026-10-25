@@ -159,8 +159,16 @@ class FastAITests(unittest.TestCase):
                 ctx['epic'] = 'GBPUSD'  # different market, same completed candle
                 worker.monitor_market('GBPUSD',ctx,rank(ctx),[])
                 self.assertEqual(calls, ['GBPUSD'])
+                class Broker:
+                    def configure_entries(self, *args):
+                        pass
+                    def login(self):
+                        pass
+                worker.broker_factory = lambda daily: Broker()
+                _, journal = worker.resources()
+                self.assertTrue(journal.allow_newsless_technical)
             finally:
-                for name in ('trial','ai','schedule'):
+                for name in ('trial','ai','schedule','journal','daily'):
                     obj = getattr(worker.local,name,None)
                     if obj is not None and hasattr(obj,'db'):
                         obj.db.close()

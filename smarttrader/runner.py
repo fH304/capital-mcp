@@ -343,7 +343,7 @@ class Worker:
                               if c.risk_mode=='auto' else DailyRisk(str(c.directory/'daily.sqlite'),c.account,c.limit))
             self.local.journal=DemoCoordinator(str(c.directory/'orders.sqlite'),c.account,c.max_positions,
                                               allow_technical_entry=c.technical_entries,
-                                              allow_newsless_technical=c.decision_engine=='rules')
+                                              allow_newsless_technical=c.decision_engine=='rules' or c.fast_ai)
         if not getattr(self.local,'broker',None):
             c=self.config
             broker=(self.broker_factory(self.local.daily) if self.broker_factory else
