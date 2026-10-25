@@ -495,8 +495,13 @@ class DemoCoordinator:
             return dict(status='close_preview',deal_id=deal,reason=reason)
         if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached',
                           'confirmed_trend_reversal','hourly_profit_target','hourly_window_end',
-                          'superseded_trend_position'}:
+                          'superseded_trend_position','fast_window_end'}:
             raise CoordinationError('Exit evidence is not independently validated')
+        if reason == 'fast_window_end' and (
+                plan.get('strategy') != 'ai_fast_m15_v1'
+                or type(plan.get('signal_candle')) not in (int,float)
+                or time.time() < plan['signal_candle']+900+3600):
+            raise CoordinationError('Fast exit window not independently verified')
         if reason == 'superseded_trend_position' and plan.get('strategy')=='hourly_hedge_v1':
             raise CoordinationError('Cannot migrate an hourly position as an old trend entry')
         if reason in {'hourly_profit_target','hourly_window_end'} and (

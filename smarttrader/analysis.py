@@ -87,6 +87,15 @@ news response as proof that no economic event is approaching. Do not claim a
 probability, manufacture levels, or force a trade merely because entry is allowed.
 """
 INSTRUCTIONS = CORE_INSTRUCTIONS + NEWS_INSTRUCTIONS
+FAST_INSTRUCTIONS = """Approved demo fast candidate policy: only the latest completed
+M15 candle and completed H1 trend produced structure_setup. Choose BUY or SELL
+only if structure_setup.ready is true and matches its direction; otherwise WAIT.
+AI is a veto, not a source of risk limits, leverage, levels, or probability.
+For a chosen entry return exactly structure_setup.stop_level and target_level.
+News is optional in this mode; a missing feed alone is not a veto. Freshness,
+cost-adjusted 2:1 reward/risk and broker protection are enforced in code.
+Prefer WAIT if price movement or contrary evidence weakens the candidate.
+"""
 
 
 def validate_context(context, now, *, allow_missing_news=False):
@@ -182,13 +191,16 @@ def validate_recommendation(result, context, now, *, allow_missing_news=False,
 
 class AnalysisClient:
     def __init__(self, key, model, path, daily_calls=4, opener=None, *, allow_missing_news=False,
-                 allow_technical_entry=False, trial=None):
+                 allow_technical_entry=False, allow_newsless_technical=False,
+                 fast_ai=False, trial=None):
         if not key or not model:
             raise AnalysisError('Set OPENAI_API_KEY and OPENAI_MODEL')
         if daily_calls is not None and (type(daily_calls) is not int or not 1 <= daily_calls <= 24):
             raise AnalysisError('Invalid daily analysis call cap')
         self.key, self.model, self.daily_calls = key, model, daily_calls
         self.allow_technical_entry = allow_technical_entry is True
+        self.allow_newsless_technical = allow_newsless_technical is True
+        self.fast_ai = fast_ai is True
         self.allow_missing_news = allow_missing_news or self.allow_technical_entry
         self.trial = trial
         self.opener = opener or build_opener(NoRedirect()).open
@@ -211,7 +223,8 @@ class AnalysisClient:
         context = dict(context, entry_evidence_policy=(TECHNICAL_OR_NEWS
                        if self.allow_technical_entry else NEWS_REQUIRED))
         if self.allow_technical_entry:
-            context['technical_evidence'] = technical_evidence(context, now)
+            context['technical_evidence'] = technical_evidence(
+                context, now, require_news_health=not self.allow_newsless_technical)
             from .strategy import active_setup
             context['structure_setup'] = active_setup(context,now)
         else:
@@ -220,9 +233,16 @@ class AnalysisClient:
         data = json.dumps(context, allow_nan=False)
         if len(data.encode()) > 30000:
             raise AnalysisError('Analysis input exceeds size cap')
-        # The full worst-case model charge is persisted BEFORE any paid HTTP.
-        charge_id = self.trial.reserve(context['epic'],self.model,now) if self.trial else None
         day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+        if self.fast_ai and self.daily_calls is not None:
+            # A capped call must not reserve trial dollars it cannot spend.
+            row = self.db.execute('SELECT used FROM ai_budget WHERE day=?',(day,)).fetchone()
+            if row and row[0] >= self.daily_calls:
+                raise AnalysisError('Daily analysis call cap exhausted')
+        # The full worst-case model charge is persisted BEFORE any paid HTTP.
+        charge_id = (self.trial.reserve(context['epic'],self.model,now,fast_ai=True)
+                     if self.trial and self.fast_ai else
+                     self.trial.reserve(context['epic'],self.model,now) if self.trial else None)
         self.db.execute('BEGIN IMMEDIATE')
         try:
             row = self.db.execute('SELECT used FROM ai_budget WHERE day=?', (day,)).fetchone()
@@ -233,7 +253,8 @@ class AnalysisClient:
         except Exception:
             self.db.rollback()
             raise
-        instructions = (CORE_INSTRUCTIONS+TECHNICAL_INSTRUCTIONS if self.allow_technical_entry else INSTRUCTIONS)
+        instructions = (CORE_INSTRUCTIONS+FAST_INSTRUCTIONS if self.fast_ai else
+                        CORE_INSTRUCTIONS+TECHNICAL_INSTRUCTIONS if self.allow_technical_entry else INSTRUCTIONS)
         payload = {'model': self.model, 'instructions': instructions, 'input': data,
                    'store': False, 'max_output_tokens': 2000,
                    'text': {'format': {'type': 'json_schema', 'name': 'market_assessment',
@@ -277,4 +298,5 @@ class AnalysisClient:
         completed_at = now if fixed_clock else time.time()
         return validate_recommendation(result, context, completed_at,
                                        allow_missing_news=self.allow_missing_news,
-                                       allow_technical_entry=self.allow_technical_entry)
+                                       allow_technical_entry=self.allow_technical_entry,
+                                       allow_newsless_technical=self.allow_newsless_technical)

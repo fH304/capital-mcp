@@ -70,6 +70,11 @@ def accepts_levels(setup, action, stop, target, bid, ask):
     sign = 1 if action == 'BUY' else -1
     entry = ask if action == 'BUY' else bid
     risk, reward = sign*(entry-stop), sign*(target-entry)
+    if setup['strategy'] == 'ai_fast_m15_v1':
+        return (abs(stop-setup['stop_level']) <= 1e-10*max(1,abs(stop))
+                and abs(target-setup['target_level']) <= 1e-10*max(1,abs(target))
+                and reward-setup['slippage_stress_distance'] >=
+                2*(risk+setup['slippage_stress_distance']))
     if setup['strategy'] in ('hour_trend_v1','day_trend_v1'):
         return (target == 0 and risk > 0
                 and abs(stop-setup['invalidation_level']) <= 1e-12)
@@ -111,6 +116,9 @@ def range_setup(context, now):
 
 def active_setup(context, now):
     """Select the explicitly configured demo strategy."""
+    if context.get('strategy_policy') == 'fast_ai_m15':
+        from .fast_ai import setup
+        return setup(context, now)
     if context.get('strategy_policy') == 'independent_hour_day_trends':
         from .trend_following import active_setup as trend_routes
         return trend_routes(context,now)

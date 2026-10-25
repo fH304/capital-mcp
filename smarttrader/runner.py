@@ -77,18 +77,29 @@ class Config:
         self.trial=trial_flag=='1'
         if self.trial and (not is_approved_account(self.account) or not self.broad):
             raise ValueError('Trial is authorized for the approved broad demo account only')
+        self.fast_ai=env.get('SMART_AI_FAST','0')=='1'
+        if env.get('SMART_AI_FAST','0') not in {'0','1'}:
+            raise ValueError('SMART_AI_FAST must be 0 or 1')
+        if self.fast_ai and not (self.trial and is_approved_account(self.account)):
+            raise ValueError('Fast AI is restricted to the approved demo trial')
         self.decision_engine=env.get('SMART_DECISION_ENGINE',
-                                     'rules' if self.trial else 'ai')
+                                     'ai' if self.fast_ai else 'rules' if self.trial else 'ai')
+        if self.fast_ai:
+            self.decision_engine='ai'  # opt in overrides the previous Render rules setting
         if self.decision_engine not in {'rules','ai'} or (self.decision_engine=='rules' and not self.trial):
             raise ValueError('Rules engine requires the approved demo trial')
-        if self.decision_engine=='ai' and not all((self.ai_key,self.model,self.news_key)):
-            raise ValueError('Missing AI or news configuration')
+        if self.decision_engine=='ai' and not all((self.ai_key,self.model)):
+            raise ValueError('Missing AI configuration')
+        if self.decision_engine=='ai' and not self.fast_ai and not self.news_key:
+            raise ValueError('Missing AI news configuration')
         # Zero removes the numerical cap only for the approved demo trial.
         # Broker minimums and portfolio risk/margin ceilings still apply.
         self.max_positions=int(env.get('SMART_PAIR_ENTRIES',
                                        '0' if self.trial and is_approved_account(self.account) else '1'))
         if self.max_positions not in (0,1,2) or (self.max_positions==0 and not self.trial):
             raise ValueError('SMART_PAIR_ENTRIES must be 1, 2, or 0 for the approved demo trial')
+        if self.fast_ai:
+            self.max_positions=0  # shared portfolio risk/margin cap, no count cap
         self.analysis_mode=env.get('SMART_ANALYSIS_MODE','budgeted')
         if self.analysis_mode not in {'continuous','budgeted'}:
             raise ValueError('Invalid analysis mode')
@@ -114,15 +125,17 @@ class Config:
         self.technical_entries=self.entry_evidence==TECHNICAL_OR_NEWS
         if self.technical_entries and not (self.trial and is_approved_account(self.account)):
             raise ValueError('Technical entry policy is restricted to the approved demo trial')
+        if self.fast_ai and not self.technical_entries:
+            raise ValueError('Fast AI requires technical entry evidence')
         if self.decision_engine=='rules' and not self.technical_entries:
             raise ValueError('Rules engine requires the approved technical entry policy')
         self.core_rules_only=self.decision_engine=='rules'
-        self.strategy=env.get('SMART_RULES_STRATEGY',
+        self.strategy=('ai_fast' if self.fast_ai else env.get('SMART_RULES_STRATEGY',
                               'hourly_hedge' if (self.trial and self.decision_engine=='rules'
-                                                 and is_approved_account(self.account)) else 'trend')
+                                                 and is_approved_account(self.account)) else 'trend'))
         if self.strategy=='hourly_hedge' and self.trial and self.decision_engine=='rules':
             self.max_positions=0  # user replaced the old position-count policy
-        if self.strategy not in {'trend','hourly_hedge'} or (self.strategy=='hourly_hedge' and
+        if self.strategy not in {'trend','hourly_hedge','ai_fast'} or (self.strategy=='hourly_hedge' and
                 (not self.trial or self.decision_engine!='rules' or self.max_positions!=0)):
             raise ValueError('Hourly hedging requires the approved rules-only demo portfolio')
         self.symbols=({epic:definition[1][0] for epic,definition in MARKETS.items()} if self.broad else
@@ -202,7 +215,8 @@ class Worker:
     def trial_active(self):
         if not self.config.trial:
             return True
-        if self.clock() >= RULES_RENEWAL_AUTHORIZED_AT and self.config.decision_engine != 'rules':
+        if (self.clock() >= RULES_RENEWAL_AUTHORIZED_AT
+                and self.config.decision_engine != 'rules' and not self.config.fast_ai):
             return False
         status=self.trial_budget().status(self.clock())
         if not status['trial_active'] and not self.trial_stop_logged:
@@ -227,11 +241,14 @@ class Worker:
             feed=dict(self.news_checks.get(context['epic'],{}))
         return dict(context,articles=articles,news_feed_healthy=feed.get('healthy',False),
                     news_checked_at=feed.get('checked_at'),entry_evidence_policy=self.config.entry_evidence,
-                    strategy_policy=('independent_hour_day_trends' if self.config.decision_engine=='rules'
+                    strategy_policy=('fast_ai_m15' if self.config.fast_ai else
+                                     'independent_hour_day_trends' if self.config.decision_engine=='rules'
                                      else 'legacy_ai'))
 
     def decision_fields(self,context,scoring):
-        checked=technical_evidence(context,self.clock()) if self.config.technical_entries else None
+        checked=(technical_evidence(context,self.clock(),
+                                   require_news_health=not self.config.fast_ai)
+                 if self.config.technical_entries else None)
         reason=('missing_news' if not context['articles'] and not self.config.technical_entries else
                 checked['reason'] if not context['articles'] and checked and not checked['ready'] else
                 active_setup(context,self.clock())['reason'] if self.config.technical_entries and not active_setup(context,self.clock())['ready'] else
@@ -399,6 +416,16 @@ class Worker:
                         reason=should_close(plan,pos,now)
                         decision=(dict(action='close_intent',reason=reason) if reason
                                   else dict(action='hold',reason=None))
+            elif (plan.get('strategy')=='ai_fast_m15_v1'
+                  and self.clock() >= plan['signal_candle']+900+3600):
+                # The broker stop/target remain in force even if this time
+                # exit cannot be sent (market closure, transport failure).
+                try:
+                    broker.market_quote(plan['epic'])
+                except CapitalError:
+                    decision=dict(action='alert',reason='fast_exit_market_unavailable')
+                else:
+                    decision=dict(action='close_intent',reason='fast_window_end')
             else:
                 quote=broker.market_quote(plan['epic'])
                 view=PositionView(deal,True,pos['direction'],pos['stopLevel'] if protected else plan['stop_level'],
@@ -467,8 +494,8 @@ class Worker:
         return None
 
     def news(self):
-        if self.config.decision_engine=='rules':
-            return True  # Price-only demo rules do not request or depend on the news provider.
+        if self.config.decision_engine=='rules' or self.config.fast_ai:
+            return True  # Price-only and fast-AI modes do not depend on a news provider.
         if not hasattr(self.local,'news'):
             self.local.news=(self.news_factory() if self.news_factory else
                 NewsClient(self.config.news_key,str(self.config.directory/'news.sqlite')))
@@ -673,8 +700,10 @@ class Worker:
             c=self.config
             self.local.ai=(self.ai_factory() if self.ai_factory else
                            AnalysisClient(c.ai_key,c.model,str(c.directory/'analysis.sqlite'),
-                                          daily_calls=None,allow_missing_news=True,
+                                          daily_calls=24 if c.fast_ai else None,allow_missing_news=True,
                                           allow_technical_entry=c.technical_entries,
+                                          allow_newsless_technical=c.fast_ai,
+                                          fast_ai=c.fast_ai,
                                           trial=self.trial_budget() if c.trial else None))
         if not hasattr(self.local,'schedule'):
             self.local.schedule=MarketSchedule(str(self.config.directory/'scans.sqlite'),
@@ -685,12 +714,20 @@ class Worker:
             self.emit('analysis_scheduled',epic=epic,analysis_mode=self.config.analysis_mode,
                       scheduling='per_market',next_at=reservation['next_at'],reason=reservation['reason'])
             return True
+        if self.config.fast_ai:
+            candidate=active_setup(context,self.clock())
+            if not candidate['ready']:
+                self.local.schedule.finish(epic,candle,'done')
+                self.emit('fast_candidate_skipped',epic=epic,candle=candle,
+                          reason=candidate['reason'])
+                return True
         self.emit('analysis_started',epic=epic,analysis_mode=self.config.analysis_mode,candle=candle,
                   news_articles=len(articles),execution_supported=context.get('execution_supported',True))
         try:
             result=self.local.ai.analyze(context)
             validate_recommendation(result,context,self.clock(),allow_missing_news=True,
-                                    allow_technical_entry=self.config.technical_entries)
+                                    allow_technical_entry=self.config.technical_entries,
+                                    allow_newsless_technical=self.config.fast_ai)
         except TrialStopped:
             self.local.schedule.finish(epic,candle,'failed')
             self.trial_active()
@@ -715,7 +752,7 @@ class Worker:
             self.study_candidate(context,scoring,result)
         range_ready=(self.config.technical_entries and active_setup(context,self.clock())['ready']
                      and active_setup(context,self.clock())['strategy']=='range_rejection_v1')
-        if not context.get('execution_supported',True) or (not articles and not self.config.technical_entries) or (scoring['score']<=0 and not range_ready):
+        if not context.get('execution_supported',True) or (not articles and not self.config.technical_entries) or (scoring['score']<=0 and not range_ready and not self.config.fast_ai):
             blocked_filters=[]
             if not context.get('execution_supported',True):
                 blocked_filters.append('execution_unsupported')
@@ -812,7 +849,7 @@ class Worker:
             return True  # observations usable; no entry performed
         if not articles and self.config.technical_entries:
             checked=technical_evidence(context,self.clock(),
-                                       require_news_health=self.config.decision_engine!='rules')
+                                       require_news_health=self.config.decision_engine!='rules' and not self.config.fast_ai)
             if not checked['ready']:
                 self.emit('entry_blocked',epic=epic,reason=checked['reason'])
                 return True
@@ -839,7 +876,9 @@ class Worker:
             c=self.config
             self.local.ai=(self.ai_factory() if self.ai_factory else
                           AnalysisClient(c.ai_key,c.model,str(c.directory/'analysis.sqlite'),daily_calls=c.calls,
-                                          allow_technical_entry=c.technical_entries))
+                                          allow_technical_entry=c.technical_entries,
+                                          allow_newsless_technical=c.fast_ai,fast_ai=c.fast_ai,
+                                          trial=self.trial_budget() if c.trial else None))
             self.local.scans=sqlite3.connect(c.directory/'scans.sqlite',timeout=10)
             self.local.scans.execute('PRAGMA synchronous=FULL')
             self.local.scans.execute('CREATE TABLE IF NOT EXISTS scans(account TEXT,epic TEXT,candle REAL,PRIMARY KEY(account,epic,candle))')
@@ -945,7 +984,8 @@ def main():
             leverage_policy='broker_current_no_probability_increase',
             analysis_framework=FRAMEWORK,
             strategy_research='disabled' if config.decision_engine=='rules' else STRATEGY,
-            strategy_execution=('hourly_two_sided_demo' if config.strategy=='hourly_hedge'
+            strategy_execution=('ai_fast_m15_demo' if config.fast_ai else
+                                'hourly_two_sided_demo' if config.strategy=='hourly_hedge'
                                 else 'independent_hour_day_trends_demo'),
             daily_loss_policy=('disabled_hourly_demo' if config.strategy=='hourly_hedge'
                                else config.risk_mode),
