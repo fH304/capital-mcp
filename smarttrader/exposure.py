@@ -14,6 +14,8 @@ MARGIN_FRACTION = Decimal('0.1')
 PORTFOLIO_ENTRY_FRACTION = Decimal('0.0005')
 FAST_AI_ENTRY_FRACTION = Decimal('0.05')
 FAST_AI_PORTFOLIO_FRACTION = Decimal('0.25')
+FAST_AI_ENTRY_USD_CAP = Decimal('50')
+FAST_AI_PORTFOLIO_USD_CAP = Decimal('250')
 
 
 class ExposureError(ValueError):
@@ -191,9 +193,11 @@ def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, r
         open_margin += margin
         components.append(dict(risk=float(risk),margin=float(margin),
                                quote_currency=pos['currency'],quote_to_account=float(fx),fx_rate=float(margin_fx)))
-    cap = baseline*(FAST_AI_PORTFOLIO_FRACTION if fast_ai else PAIR_FRACTION*risk_multiplier)
+    cap = (min(baseline*FAST_AI_PORTFOLIO_FRACTION,FAST_AI_PORTFOLIO_USD_CAP)
+           if fast_ai else baseline*PAIR_FRACTION*risk_multiplier)
     entry_fraction = FAST_AI_ENTRY_FRACTION if fast_ai else PORTFOLIO_ENTRY_FRACTION*risk_multiplier
-    risk_budget = min(equity*entry_fraction,
+    entry_cap = min(equity*entry_fraction,FAST_AI_ENTRY_USD_CAP) if fast_ai else equity*entry_fraction
+    risk_budget = min(entry_cap,
                       cap-open_risk, daily-open_risk)
     margin_limit = available*MARGIN_FRACTION
     margin_budget = margin_limit-open_margin

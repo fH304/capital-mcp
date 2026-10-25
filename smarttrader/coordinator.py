@@ -117,7 +117,9 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
         except (KeyError, IndexError, TypeError, ExposureError, ValueError) as error:
             raise PairEntryBlocked(str(error)) from None
         inputs.update(open_risk=limits['existing_risk'],
-                      daily_remaining_risk=limits['daily_remaining_risk'],
+                      daily_remaining_risk=(min(limits['daily_remaining_risk'],
+                                                limits['existing_risk']+limits['risk_budget'])
+                                            if fast_ai else limits['daily_remaining_risk']),
                       risk_fraction=str(FAST_AI_ENTRY_FRACTION if fast_ai else '0.0005'),
                       portfolio_fraction=str(FAST_AI_PORTFOLIO_FRACTION if fast_ai else '0.0025'),
                       margin_fraction=limits['margin_fraction'])
