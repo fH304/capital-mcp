@@ -45,6 +45,9 @@ RULES_RENEWAL_ENDS_AT = 1792440000.0
 WEEK_RENEWAL_ID = '2026-10-20-rules-only-seven-more-days'
 WEEK_RENEWAL_AUTHORIZED_AT = 1792510437.0
 WEEK_RENEWAL_ENDS_AT = RULES_RENEWAL_ENDS_AT + 7 * 86400
+# User reauthorized AI on 2026-10-24 for this demo trial. No additional
+# spend or time was granted: the original verified $30 ceiling still applies.
+FAST_AI_AUTHORIZED_AT = 1792876500.0
 LIMIT_NANO = 20 * 1_000_000_000
 # User authorized $25 TOTAL on 2026-10-15, not a fresh trial or $25 extra.
 BUDGET_INCREASE_ID = '2026-10-15-total-25usd-through-friday'
@@ -329,9 +332,10 @@ class TrialBudget:
         except TrialStopped as error:
             raise TrialEntryBlocked(str(error)) from None
 
-    def reserve(self, epic, model, now):
+    def reserve(self, epic, model, now, *, fast_ai=False):
         self._time(now)
-        if now >= RULES_RENEWAL_AUTHORIZED_AT:
+        if now >= RULES_RENEWAL_AUTHORIZED_AT and not (
+                fast_ai is True and FAST_AI_AUTHORIZED_AT <= now < WEEK_RENEWAL_ENDS_AT):
             raise TrialStopped('rules_only_renewal')
         if model != MODEL:
             raise TrialStopped('unpriced_trial_model')

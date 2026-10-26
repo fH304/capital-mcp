@@ -13,7 +13,8 @@ from pathlib import Path
 from .analysis import validate_recommendation
 from .policy import assessed_size
 from .sizing import size_position, SizingError
-from .exposure import entry_limits, portfolio_entry_limits, ExposureError
+from .exposure import (entry_limits, portfolio_entry_limits, ExposureError,
+                       FAST_AI_ENTRY_FRACTION, FAST_AI_PORTFOLIO_FRACTION)
 from .trial import TrialEntryBlocked, is_approved_account
 
 
@@ -111,12 +112,16 @@ def plan_entry(recommendation, context, snapshot, now, *, owned=None, max_positi
         try:
             candle = context['timeframes']['MINUTE_15']['candles'][-1]['t']
             fresh(candle+900, now, 900, 'closed entry candle')
-            limits = portfolio_entry_limits(snapshot,owned,candle=candle,now=now)
+            fast_ai = current.get('strategy_policy') == 'fast_ai_m15'
+            limits = portfolio_entry_limits(snapshot,owned,candle=candle,now=now,fast_ai=fast_ai)
         except (KeyError, IndexError, TypeError, ExposureError, ValueError) as error:
             raise PairEntryBlocked(str(error)) from None
         inputs.update(open_risk=limits['existing_risk'],
-                      daily_remaining_risk=limits['daily_remaining_risk'],
-                      risk_fraction='0.0005',portfolio_fraction='0.0025',
+                      daily_remaining_risk=(min(limits['daily_remaining_risk'],
+                                                limits['existing_risk']+limits['risk_budget'])
+                                            if fast_ai else limits['daily_remaining_risk']),
+                      risk_fraction=str(FAST_AI_ENTRY_FRACTION if fast_ai else '0.0005'),
+                      portfolio_fraction=str(FAST_AI_PORTFOLIO_FRACTION if fast_ai else '0.0025'),
                       margin_fraction=limits['margin_fraction'])
     if max_positions == 0:
         sizing = size_position(stop_distance=distance, spread=ask-bid, **inputs)
@@ -495,8 +500,13 @@ class DemoCoordinator:
             return dict(status='close_preview',deal_id=deal,reason=reason)
         if reason not in {'missing_broker_stop','daily_loss_limit','stop_breached',
                           'confirmed_trend_reversal','hourly_profit_target','hourly_window_end',
-                          'superseded_trend_position'}:
+                          'superseded_trend_position','fast_window_end'}:
             raise CoordinationError('Exit evidence is not independently validated')
+        if reason == 'fast_window_end' and (
+                plan.get('strategy') != 'ai_fast_m15_v1'
+                or type(plan.get('signal_candle')) not in (int,float)
+                or time.time() < plan['signal_candle']+900+3600):
+            raise CoordinationError('Fast exit window not independently verified')
         if reason == 'superseded_trend_position' and plan.get('strategy')=='hourly_hedge_v1':
             raise CoordinationError('Cannot migrate an hourly position as an old trend entry')
         if reason in {'hourly_profit_target','hourly_window_end'} and (

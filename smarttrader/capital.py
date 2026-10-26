@@ -516,7 +516,8 @@ class CapitalDemo:
                                               candle=plan.get('signal_candle'),now=self.clock(),
                                               hourly_direction=(plan['direction'] if plan.get('strategy')=='hourly_hedge_v1' else None),
                                               risk_multiplier=(5 if plan.get('strategy')=='hourly_hedge_v1'
-                                                               and plan.get('risk_basis')!='hourly_reference_unbounded' else 1))
+                                                               and plan.get('risk_basis')!='hourly_reference_unbounded' else 1),
+                                              fast_ai=plan.get('strategy')=='ai_fast_m15_v1')
             return entry_limits(data, self.ownership(), direction=plan.get('direction'),
                                 assessment=plan.get('assessment'), candle=plan.get('signal_candle'))
         except (ExposureError, ValueError, KeyError, TypeError):

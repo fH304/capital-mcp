@@ -466,6 +466,16 @@ class PortfolioEntryTests(unittest.TestCase):
         self.assertAlmostEqual(limits['risk_budget'],.5)
         self.assertLessEqual(limits['existing_risk'],2.5)
 
+    def test_fast_ai_uses_requested_open_risk_budget_without_changing_rules_mode(self):
+        self.data['daily_remaining_risk']=1000
+        fast=portfolio_entry_limits(self.data,self.owned,candle=NOW-900,now=NOW,fast_ai=True)
+        self.assertEqual((fast['risk_budget'],fast['portfolio_risk_limit']),(50,250))
+        self.assertEqual((self.limits()['risk_budget'],self.limits()['portfolio_risk_limit']),(.5,2.5))
+        self.add('old')
+        self.owned['old'].update(planned_risk=220,actual_risk=220)
+        later=portfolio_entry_limits(self.data,self.owned,candle=NOW-900,now=NOW,fast_ai=True)
+        self.assertEqual((later['risk_budget'],later['existing_risk']),(30,220))
+
     def test_combined_risk_and_margin_still_veto_and_unknown_owner_blocks(self):
         for deal in range(3): self.add(str(deal))
         self.data['daily_remaining_risk']=.2

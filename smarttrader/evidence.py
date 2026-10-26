@@ -23,7 +23,7 @@ def technical_evidence(context, now, *, require_news_health=True):
             return result
     if context.get('execution_supported') is not True:
         return dict(result, reason='observation_only_contract')
-    if context.get('strategy_policy') in ('three_month_retest_only','independent_hour_day_trends'):
+    if context.get('strategy_policy') in ('three_month_retest_only','independent_hour_day_trends','fast_ai_m15'):
         setup=active_setup(context,now)
         return dict(result,**{k:v for k,v in setup.items() if k not in result},
                     ready=setup['ready'],direction=setup['direction'],reason=setup['reason'])

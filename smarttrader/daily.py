@@ -71,6 +71,18 @@ class DemoHourlyNoDailyGate:
                     mode='hourly_demo_no_daily_loss_limit')
 
 
+class DemoFastAINoDailyGate:
+    """Keep the user's fast AI demo risk limits per entry and open portfolio.
+
+    The equity-sized remaining value only satisfies the common broker snapshot
+    contract; it is not a daily loss ceiling or a promise about actual losses.
+    """
+    def __call__(self, equity, now):
+        observed = decimal(equity, 'equity')
+        return dict(stopped=False, remaining=float(observed), ready=True,
+                    mode='fast_ai_demo_no_daily_loss_limit')
+
+
 class AdaptiveDailyRisk:
     """Deterministic experimental demo policy, not an optimized trading model.
 
