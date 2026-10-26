@@ -277,7 +277,7 @@ class Worker:
     def observe_spread(self,context,scoring,bars=()):
         # New technical hypotheses are observational only. Their action is
         # never passed to the AI, the coordinator, or the broker.
-        if self.config.decision_engine=='rules':
+        if self.config.decision_engine=='rules' or self.config.fast_ai:
             self.emit('spread_metrics',epic=context['epic'],study_recorded=False,
                       **self.spread_fields(scoring))
             return
@@ -543,6 +543,7 @@ class Worker:
                       if 0<=self.clock()-timestamp(a['published_utc'])<=21600][:5]
         collector=MarketCollector(broker,self.clock)
         collector.rules_only=self.config.decision_engine=='rules'
+        collector.fast_ai=self.config.fast_ai
         context=collector.collect_market(epic)
         if collector.rules_only:
             context=collector.attach_trend_daily(context)
@@ -624,6 +625,7 @@ class Worker:
         try:
             collector=MarketCollector(broker,self.clock)
             collector.rules_only=self.config.decision_engine=='rules'
+            collector.fast_ai=self.config.fast_ai
             context=collector.collect_market(epic)
             if (self.config.decision_engine=='rules' and epic in MARKETS
                     and hasattr(collector,'attach_trend_daily')):

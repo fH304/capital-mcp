@@ -14,6 +14,9 @@ class MarketCollector:
         quote_method=getattr(self.broker,'observation_quote',self.broker.market_quote)
         quote_method(epic)
         rules=getattr(self,'rules_only',False)
+        fast_ai=getattr(self,'fast_ai',False)
+        if rules and fast_ai:
+            raise MarketDataError('Conflicting candle collection policies')
         if rules:
             histories={'MINUTE_15':self.broker.prices(epic,'MINUTE_15',40)}
             from .capital import CapitalError
@@ -21,6 +24,11 @@ class MarketCollector:
                 histories['HOUR']=self.broker.prices(epic,'HOUR',40)
             except CapitalError:
                 pass  # The daily route can still proceed.
+        elif fast_ai:
+            # The fast setup uses M15 and H1. Requiring H4 after a weekend
+            # blocks otherwise fresh M15/H1 observations for many hours.
+            histories={resolution:self.broker.prices(epic,resolution,40)
+                       for resolution in ('MINUTE_15','HOUR')}
         else:
             histories={resolution:self.broker.prices(epic,resolution,40) for resolution in RESOLUTIONS}
         # Refresh executable quote AFTER all historical requests.
@@ -35,7 +43,8 @@ class MarketCollector:
             except MarketDataError:
                 if not rules or resolution!='HOUR':
                     raise
-        validate_frames(frames,now,required=frames.keys() if rules else RESOLUTIONS)
+        validate_frames(frames,now,required=frames.keys() if rules else
+                        {'MINUTE_15','HOUR'} if fast_ai else RESOLUTIONS)
         fresh(quote['quote_time'],now,30,'collected quote')
         # Reuse already-fetched executable sides for the read-only spread study.
         # They are kept outside the AI input, so its token/cost policy is unchanged.

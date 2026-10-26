@@ -140,6 +140,8 @@ def portfolio_entry_limits(data, owned, *, candle, now, hourly_direction=None, r
     for item in positions:
         pos, market = item['position'], item['market']
         plan, quote = owned[pos['dealId']], quotes[pos['dealId']]
+        if fast_ai and plan.get('strategy') not in (None,'ai_fast_m15_v1'):
+            raise ExposureError('Close legacy positions before fast AI entries')
         if (market.get('epic') != plan.get('epic') or quote.get('epic') != plan.get('epic')
                 or pos.get('direction') != plan.get('direction')
                 or pos.get('size') != plan.get('size')

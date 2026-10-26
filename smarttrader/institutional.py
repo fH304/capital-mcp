@@ -46,11 +46,20 @@ def market_brief(context, now):
     bid, ask, quote_time = (numeric(context[k]) for k in ('bid', 'ask', 'quote_time'))
     if ask < bid or not 0 <= now-quote_time <= 30:
         raise MarketDataError('Stale or crossed desk quote')
-    validate_frames(context['timeframes'], now)
+    fast_ai=context.get('strategy_policy')=='fast_ai_m15'
+    if fast_ai and (not {'MINUTE_15','HOUR'} <= set(context['timeframes'])
+                    or set(context['timeframes'])-{'MINUTE_15','HOUR','HOUR_4'}):
+        raise MarketDataError('Unsupported fast AI timeframes')
+    validate_frames(context['timeframes'], now,
+                    required=context['timeframes'].keys() if fast_ai else None)
     frames = {name: frame_metrics(frame) for name, frame in context['timeframes'].items()}
-    higher = [frames[name]['bias'] for name in ('HOUR_4', 'HOUR')]
-    regime = ('trend_'+higher[0] if higher[0] == higher[1] and higher[0] != 'neutral' else
-              'range' if higher == ['neutral', 'neutral'] else 'mixed')
+    if fast_ai:
+        higher=frames['HOUR']['bias']
+        regime='trend_'+higher if higher!='neutral' else 'range'
+    else:
+        higher = [frames[name]['bias'] for name in ('HOUR_4', 'HOUR')]
+        regime = ('trend_'+higher[0] if higher[0] == higher[1] and higher[0] != 'neutral' else
+                  'range' if higher == ['neutral', 'neutral'] else 'mixed')
     bars = context['timeframes']['MINUTE_15']['candles']
     baseline_atr = statistics.mean(true_ranges(bars[:-1])[-14:])
     last_range = true_ranges(bars[-2:])[0]
