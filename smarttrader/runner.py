@@ -942,6 +942,9 @@ class Worker:
 
 
 def main():
+    if os.environ.get('SMART_GOLD_DAILY_EMA50') == '1':
+        from .ema50_daily import main as daily_ema50_main
+        return daily_ema50_main()
     parser=argparse.ArgumentParser(description='Capital AI demo worker')
     parser.add_argument('--once',action='store_true',help='one preview pass, no orders')
     args=parser.parse_args()
