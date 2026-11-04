@@ -129,12 +129,28 @@ def minimum_order(data, direction, balance, available, now, offset):
     return dict(epic='GOLD', direction=direction, size=float(size), guaranteedStop=False)
 
 
+class LoginGate:
+    """Share the API-key login rate limit across otherwise separate sessions."""
+    def __init__(self, *, clock=time.monotonic, sleep=time.sleep):
+        self.lock, self.last = threading.Lock(), float('-inf')
+        self.clock, self.sleep = clock, sleep
+
+    def wait(self):
+        with self.lock:
+            self.sleep(max(0, 1.1 - (self.clock() - self.last)))
+            self.last = self.clock()
+
+
 class Broker:
-    def __init__(self, env, *, opener=None, clock=time.time, sleep=time.sleep):
+    def __init__(self, env, *, opener=None, clock=time.time, sleep=time.sleep,
+                 paper_market_data=False, login_gate=None):
         if env.get('CAP_ENV') != 'demo':
             raise Halt('demo_environment_required')
         self.account = ident(env['BOT_ACCOUNT_ID'])
         self.armed = env.get('SMART_MODE') == 'demo'
+        self.paper_market_data, self.login_gate = paper_market_data, login_gate
+        if paper_market_data and self.armed:
+            raise Halt('paper_client_must_be_unarmed')
         if self.armed and (env.get('SMART_ARMED') != 'DEMO_ONLY'
                            or env.get('SMART_EXCLUSIVE_ACCOUNT') != self.account):
             raise Halt('exclusive_demo_arming_required')
@@ -151,6 +167,8 @@ class Broker:
         allowed = method == 'GET' and (path in {'/session', '/accounts', '/positions', '/workingorders',
                                                '/markets/GOLD', '/prices/GOLD?resolution=DAY&max=500'}
                    or re.fullmatch(r'/(confirms|positions)/[A-Za-z0-9_.:-]{1,150}', path))
+        allowed = allowed or (self.paper_market_data and method == 'GET' and path in {
+            '/markets/EURUSD', '/prices/EURUSD?resolution=DAY&max=500'})
         allowed = allowed or method == 'POST' and path == '/session'
         allowed = allowed or self.armed and (method == 'POST' and path == '/positions'
                     or method == 'DELETE' and re.fullmatch(r'/positions/[A-Za-z0-9_.:-]{1,150}', path))
@@ -160,6 +178,8 @@ class Broker:
         if method == 'POST' and path == '/session':
             delay = max(delay, 1.1 - (self.clock() - self.last_login))
         self.sleep(delay)
+        if method == 'POST' and path == '/session' and self.login_gate:
+            self.login_gate.wait()
         self.last_request = self.clock()
         if method == 'POST' and path == '/session':
             self.last_login = self.last_request
@@ -379,7 +399,8 @@ def main():
     lock = open(lock_path, 'a')
     try:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        api = Broker(env)
+        login_gate = LoginGate()
+        api = Broker(env, login_gate=login_gate)
         journal = Journal(str(directory / ('gold-daily-ema50-' + mode + '.sqlite')), api.account, mode)
         worker = Worker(api, journal, mode)
         stop = threading.Event()
@@ -388,6 +409,15 @@ def main():
         emit('ema50_started', strategy=STRATEGY, mode=mode, epic='GOLD', timeframe='DAY',
              account_ending=api.account[-4:], size_policy='broker_minimum',
              stop_loss=None, take_profit=None, ai_calls=False)
+        if env.get('SMART_EURUSD_PAPER') == '1' and not args.once:
+            # The observer owns a separate unarmed client and ledger. Its failure
+            # must never stop the existing GOLD manager or change its ownership.
+            try:
+                from .eurusd_paper import start_observer
+                start_observer(dict(env), directory, stop, login_gate)
+            except Exception as error:
+                emit('eurusd_paper_error', error_type=type(error).__name__,
+                     reason='observer_start_failed_gold_continues')
         while not stop.is_set():
             try:
                 worker.cycle()
