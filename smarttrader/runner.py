@@ -942,6 +942,9 @@ class Worker:
 
 
 def main():
+    if os.environ.get('SMART_METALS_DAILY_EMA50') == '1':
+        from .metals_daily import main as metals_daily_main
+        return metals_daily_main()
     if os.environ.get('SMART_GOLD_DAILY_EMA50') == '1':
         from .ema50_daily import main as daily_ema50_main
         return daily_ema50_main()

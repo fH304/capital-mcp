@@ -86,9 +86,9 @@ def daily_signal(rows, now):
                 direction='BUY' if close > ema else 'SELL' if close < ema else None)
 
 
-def quote(data, now, offset):
+def quote(data, now, offset, epic='GOLD'):
     ins, s = data['instrument'], data['snapshot']
-    if (ins['epic'] != 'GOLD' or ins['type'] != 'COMMODITIES'
+    if (epic not in {'GOLD', 'SILVER'} or ins['epic'] != epic or ins['type'] != 'COMMODITIES'
             or ins['currency'] != 'USD' or num(ins['lotSize']) != 1
             or num(s['scalingFactor']) != 1):
         raise Halt('unsupported_gold_contract')
@@ -104,8 +104,8 @@ def quote(data, now, offset):
     return dict(bid=bid, ask=ask)
 
 
-def minimum_order(data, direction, balance, available, now, offset, requested_size=None):
-    q = quote(data, now, offset)
+def minimum_order(data, direction, balance, available, now, offset, requested_size=None, epic='GOLD'):
+    q = quote(data, now, offset, epic)
     rules, ins = data['dealingRules'], data['instrument']
     def quantity(name):
         if rules[name]['unit'] != 'POINTS':
@@ -132,7 +132,7 @@ def minimum_order(data, direction, balance, available, now, offset, requested_si
     if ((requested_size is None and float(size) * price > balance * .1)
             or float(size) * price * margin > available * .1):
         raise Wait('minimum_size_exceeds_test_exposure_limit')
-    return dict(epic='GOLD', direction=direction, size=float(size), guaranteedStop=False)
+    return dict(epic=epic, direction=direction, size=float(size), guaranteedStop=False)
 
 
 class LoginGate:
@@ -149,12 +149,15 @@ class LoginGate:
 
 class Broker:
     def __init__(self, env, *, opener=None, clock=time.time, sleep=time.sleep,
-                 paper_market_data=False, login_gate=None):
+                 paper_market_data=False, login_gate=None, market_epics=()):
         if env.get('CAP_ENV') != 'demo':
             raise Halt('demo_environment_required')
         self.account = ident(env['BOT_ACCOUNT_ID'])
         self.armed = env.get('SMART_MODE') == 'demo'
         self.paper_market_data, self.login_gate = paper_market_data, login_gate
+        self.market_epics = frozenset(market_epics)
+        if not self.market_epics <= {'GOLD', 'SILVER'}:
+            raise Halt('unsupported_daily_metals_scope')
         if paper_market_data and self.armed:
             raise Halt('paper_client_must_be_unarmed')
         if self.armed and (env.get('SMART_ARMED') != 'DEMO_ONLY'
@@ -175,9 +178,15 @@ class Broker:
                    or re.fullmatch(r'/(confirms|positions)/[A-Za-z0-9_.:-]{1,150}', path))
         allowed = allowed or (self.paper_market_data and method == 'GET' and path in {
             '/markets/EURUSD', '/prices/EURUSD?resolution=DAY&max=500'})
+        allowed = allowed or (method == 'GET' and any(path in {
+            '/markets/' + epic, '/prices/' + epic + '?resolution=DAY&max=500'}
+            for epic in self.market_epics))
         allowed = allowed or method == 'POST' and path == '/session'
         allowed = allowed or self.armed and (method == 'POST' and path == '/positions'
                     or method == 'DELETE' and re.fullmatch(r'/positions/[A-Za-z0-9_.:-]{1,150}', path))
+        if method == 'POST' and path == '/positions' and (
+                not isinstance(payload, dict) or payload.get('epic') not in {'GOLD'} | self.market_epics):
+            allowed = False
         if not allowed:
             raise Halt('endpoint_outside_daily_demo_scope')
         delay = max(0, .2 - (self.clock() - self.last_request))
@@ -235,12 +244,15 @@ class Broker:
 
 
 class Journal:
-    def __init__(self, path, account, mode):
+    def __init__(self, path, account, mode, epic='GOLD'):
+        if epic not in {'GOLD', 'SILVER'}:
+            raise Halt('unsupported_daily_metals_scope')
         self.db = sqlite3.connect(path)
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY, body TEXT NOT NULL)')
         row = self.db.execute('SELECT body FROM journal WHERE id=1').fetchone()
-        scope = [STRATEGY, account, mode, 'GOLD', 'broker_minimum']
+        scope = ([STRATEGY, account, mode, 'GOLD', 'broker_minimum'] if epic == 'GOLD' else
+                 ['silver_daily_ema50_v1', account, mode, 'SILVER', 'explicit_fixed'])
         self.state = json.loads(row[0]) if row else dict(scope=scope, position=None, pending=None, halt=None)
         if self.state['scope'] != scope:
             raise Halt('journal_scope_mismatch')
@@ -254,8 +266,11 @@ class Journal:
 
 class Worker:
     def __init__(self, broker, journal, mode, *, clock=time.time, sleep=time.sleep, log=emit,
-                 requested_size=None):
+                 requested_size=None, epic='GOLD', exposure_check=None):
+        if epic not in {'GOLD', 'SILVER'}:
+            raise Halt('unsupported_daily_metals_scope')
         self.api, self.journal, self.mode = broker, journal, mode
+        self.epic, self.exposure_check = epic, exposure_check
         self.clock, self.sleep, self.log = clock, sleep, log
         self.requested_size = num(requested_size) if requested_size is not None else None
         self.idea, self.idea_at, self.idea_day = None, 0, None
@@ -284,7 +299,7 @@ class Worker:
         if pending['kind'] == 'open':
             actual = self.api.read('/positions/' + deal)
             pos, market, order = actual['position'], actual['market'], pending['order']
-            if (pos['dealId'] != deal or market['epic'] != 'GOLD' or pos['currency'] != 'USD'
+            if (pos['dealId'] != deal or market['epic'] != self.epic or pos['currency'] != 'USD'
                     or num(pos['contractSize']) != 1 or pos['direction'] != order['direction']
                     or num(pos['size']) != order['size'] or pos.get('stopLevel') is not None
                     or pos.get('profitLevel') is not None):
@@ -300,7 +315,7 @@ class Worker:
         state['pending'] = None
         self.journal.save()
         self.log('ema50_position_opened' if pending['kind'] == 'open' else 'ema50_position_closed',
-                 mode=self.mode, deal_id=deal, direction=pending.get('order', {}).get('direction'),
+                 mode=self.mode, epic=self.epic, deal_id=deal, direction=pending.get('order', {}).get('direction'),
                  size=pending.get('order', {}).get('size'), signal_bar=pending['bar'])
 
     def mutate(self, pending, method, path, payload=None):
@@ -330,6 +345,8 @@ class Worker:
         return matching[0]['balance']
 
     def positions(self):
+        if self.exposure_check is not None:
+            return self.exposure_check()
         positions = self.api.read('/positions')['positions']
         orders = self.api.read('/workingorders')['workingOrders']
         if not isinstance(positions, list) or not isinstance(orders, list):
@@ -339,7 +356,7 @@ class Worker:
             self.halt('foreign_or_missing_account_exposure')
         if owned:
             pos, market = positions[0]['position'], positions[0]['market']
-            if (pos['dealId'] != owned['deal_id'] or market['epic'] != 'GOLD'
+            if (pos['dealId'] != owned['deal_id'] or market['epic'] != self.epic
                     or pos['direction'] != owned['direction'] or pos['size'] != owned['size']
                     or pos.get('currency') != 'USD' or num(pos.get('contractSize')) != 1
                     or pos.get('stopLevel') is not None or pos.get('profitLevel') is not None):
@@ -352,16 +369,16 @@ class Worker:
         balance = self.account()
         self.recover()
         self.positions()
-        data = self.api.read('/markets/GOLD')
+        data = self.api.read('/markets/' + self.epic)
         now = self.clock()
-        quote(data, now, self.api.offset)
+        quote(data, now, self.api.offset, self.epic)
         day = int(now // 86400)
         if self.idea is None or self.idea_day != day or now - self.idea_at >= 300:
-            rows = self.api.read('/prices/GOLD?resolution=DAY&max=500')['prices']
+            rows = self.api.read('/prices/' + self.epic + '?resolution=DAY&max=500')['prices']
             self.idea = daily_signal(rows, self.clock())
             self.idea_at, self.idea_day = self.clock(), day
         idea, owned = self.idea, state['position']
-        self.log('ema50_heartbeat', mode=self.mode, epic='GOLD', timeframe='DAY',
+        self.log('ema50_heartbeat', mode=self.mode, epic=self.epic, timeframe='DAY',
                  last_closed_bar=datetime.fromtimestamp(idea['bar'], timezone.utc).isoformat(),
                  last_closed_bid=idea['close'], ema50=round(idea['ema50'], 6),
                  signal=idea['direction'], open_positions=1 if owned else 0,
@@ -374,7 +391,7 @@ class Worker:
         if self.mode == 'preview':
             order = minimum_order(data, idea['direction'], num(balance['balance'], False),
                                   num(balance['available'], False), self.clock(), self.api.offset,
-                                  self.requested_size)
+                                  self.requested_size, self.epic)
             self.log('ema50_preview', **order, signal_bar=idea['bar'], stop_loss=None,
                      take_profit=None, exit_policy='opposite_completed_daily_close')
             return
@@ -387,8 +404,9 @@ class Worker:
                 # the owned position. An invalid size or margin cannot flatten it.
                 minimum_order(data, idea['direction'], num(balance['balance'], False),
                               num(balance['available'], False), self.clock(), self.api.offset,
-                              self.requested_size)
+                              self.requested_size, self.epic)
                 self.log('ema50_resize_requested', mode=self.mode, deal_id=owned['deal_id'],
+                         epic=self.epic,
                          old_size=owned['size'], new_size=self.requested_size,
                          direction=idea['direction'], signal_bar=idea['bar'])
             self.mutate(dict(kind='close', deal_id=owned['deal_id'], bar=idea['bar']),
@@ -396,12 +414,12 @@ class Worker:
         # Close must be accepted and absent from the broker list before reversal.
         balance = self.account()
         self.positions()
-        data = self.api.read('/markets/GOLD')
+        data = self.api.read('/markets/' + self.epic)
         if int(self.clock() // 86400) != self.idea_day:
             raise Wait('daily_boundary_changed_before_entry')
         order = minimum_order(data, idea['direction'], num(balance['balance'], False),
                               num(balance['available'], False), self.clock(), self.api.offset,
-                              self.requested_size)
+                              self.requested_size, self.epic)
         self.mutate(dict(kind='open', order=order, bar=idea['bar']), 'POST', '/positions', order)
 
 
