@@ -1,0 +1,39 @@
+# Set these in Render Environment. Never commit actual credentials.
+CAP_ENV=demo
+CAP_API_KEY=
+CAP_IDENTIFIER=
+CAP_API_PASSWORD=
+BOT_ACCOUNT_ID=330438437114294558
+BOT_STATE_PATH=/var/data/demo.sqlite
+SMART_STATE_DIR=/var/data/smarttrader
+SMART_MODE=preview
+SMART_MARKETS=broad
+SMART_DAILY_RISK_MODE=auto
+# Optional legacy fixed mode: SMART_DAILY_RISK_MODE=fixed, SMART_DAILY_LOSS_LIMIT=<USD>
+SMART_TRIAL_ENABLED=1
+# Authorized account above + broad: one persistent 72-hour/$20 OpenAI trial.
+# Original checkpoint: 2026-10-08 18:24:33.5271823 UTC, ends Oct 11 at that time.
+# Requires the complete original trial.sqlite on the same persistent disk.
+# Missing/replaced ledger blocks paid analysis and new entries; no fresh grant.
+# Do not delete state, copy only the start row, or disable the guard to resume.
+# Trial overrides legacy daily cap/spacing and pins gpt-4.1-mini-2025-04-14.
+# At expiry/exhaustion: no paid analysis/new entries; position protection stays on.
+# Set SMART_TRIAL_ENABLED=0 to opt out. Other accounts default to disabled.
+SMART_ANALYSIS_MODE=budgeted
+SMART_AI_CALLS_PER_DAY=4
+SMART_ANALYSIS_INTERVAL_SECONDS=0
+# Outside the authorized trial, existing services retain their paid API limit.
+# SMART_ANALYSIS_MODE=continuous without the trial has no dollar/time cap.
+# Continuous: each available market gets one AI attempt per new closed M15 bar.
+# Trial and continuous ignore old SMART_AI_CALLS_PER_DAY=4.
+# 0 adds no extra cooldown; a positive interval applies independently per market.
+# Budgeted mode retains the old shared cap and account spacing.
+SMART_NEWS_SYMBOLS={"EURUSD":"EURUSD.FOREX"}
+# SMART_NEWS_SYMBOLS is used only when SMART_MARKETS=single.
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
+EODHD_API_KEY=
+# Only after successful preview, verified account is flat and old worker stopped:
+# SMART_MODE=demo
+# SMART_ARMED=DEMO_ONLY
+# SMART_EXCLUSIVE_ACCOUNT=330438437114294558
