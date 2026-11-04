@@ -1,4 +1,4 @@
-"""One minimum-size GOLD position, closed D1 EMA50 signals, demo endpoint only.
+"""One GOLD position, closed D1 EMA50 signals, demo endpoint only.
 
 This opt-in strategy has no price stop or take-profit. Its exit is a confirmed
 opposite daily close. It never calls an AI provider or renews a paid trial.
@@ -104,7 +104,7 @@ def quote(data, now, offset):
     return dict(bid=bid, ask=ask)
 
 
-def minimum_order(data, direction, balance, available, now, offset):
+def minimum_order(data, direction, balance, available, now, offset, requested_size=None):
     q = quote(data, now, offset)
     rules, ins = data['dealingRules'], data['instrument']
     def quantity(name):
@@ -114,6 +114,10 @@ def minimum_order(data, direction, balance, available, now, offset):
     minimum, step, maximum = (quantity(k) for k in
                               ('minDealSize', 'minSizeIncrement', 'maxDealSize'))
     size = (minimum / step).to_integral_value(rounding=ROUND_CEILING) * step
+    if requested_size is not None:
+        size = Decimal(str(num(requested_size)))
+        if size < minimum or size % step:
+            raise Halt('requested_gold_size_outside_broker_rules')
     if size > maximum or direction not in ('BUY', 'SELL'):
         raise Halt('invalid_minimum_order')
     if ins['marginFactorUnit'] != 'PERCENTAGE':
@@ -122,9 +126,11 @@ def minimum_order(data, direction, balance, available, now, offset):
     margin = num(ins['marginFactor']) / 100
     if margin > 1 or balance <= 0 or available <= 0:
         raise Wait('insufficient_demo_funds')
-    # Select the broker minimum only; never increase leverage or top up funds.
-    # These entry exposure limits are not stop-loss guarantees.
-    if float(size) * price > balance * .1 or float(size) * price * margin > available * .1:
+    # Default entries retain the 10% notional limit. An explicit fixed-size
+    # request replaces minimum sizing and that notional cap, never leverage or
+    # the 10% available-margin guard. Neither is a stop-loss guarantee.
+    if ((requested_size is None and float(size) * price > balance * .1)
+            or float(size) * price * margin > available * .1):
         raise Wait('minimum_size_exceeds_test_exposure_limit')
     return dict(epic='GOLD', direction=direction, size=float(size), guaranteedStop=False)
 
@@ -247,9 +253,11 @@ class Journal:
 
 
 class Worker:
-    def __init__(self, broker, journal, mode, *, clock=time.time, sleep=time.sleep, log=emit):
+    def __init__(self, broker, journal, mode, *, clock=time.time, sleep=time.sleep, log=emit,
+                 requested_size=None):
         self.api, self.journal, self.mode = broker, journal, mode
         self.clock, self.sleep, self.log = clock, sleep, log
+        self.requested_size = num(requested_size) if requested_size is not None else None
         self.idea, self.idea_at, self.idea_day = None, 0, None
 
     def halt(self, reason):
@@ -357,18 +365,32 @@ class Worker:
                  last_closed_bar=datetime.fromtimestamp(idea['bar'], timezone.utc).isoformat(),
                  last_closed_bid=idea['close'], ema50=round(idea['ema50'], 6),
                  signal=idea['direction'], open_positions=1 if owned else 0,
+                 owned_deal_id=owned['deal_id'] if owned else None,
+                 owned_size=owned['size'] if owned else None, requested_size=self.requested_size,
                  balance=num(balance['balance'], False))
-        if idea['direction'] is None or owned and owned['direction'] == idea['direction']:
+        resize = bool(owned and self.requested_size is not None and owned['size'] != self.requested_size)
+        if idea['direction'] is None or owned and owned['direction'] == idea['direction'] and not resize:
             return
         if self.mode == 'preview':
             order = minimum_order(data, idea['direction'], num(balance['balance'], False),
-                                  num(balance['available'], False), self.clock(), self.api.offset)
+                                  num(balance['available'], False), self.clock(), self.api.offset,
+                                  self.requested_size)
             self.log('ema50_preview', **order, signal_bar=idea['bar'], stop_loss=None,
                      take_profit=None, exit_policy='opposite_completed_daily_close')
             return
         if owned:
-            if idea['bar'] <= owned['signal_bar']:
+            if (idea['bar'] < owned['signal_bar'] or
+                    owned['direction'] != idea['direction'] and idea['bar'] <= owned['signal_bar']):
                 self.halt('non_new_reversal_signal')
+            if resize:
+                # Validate the explicitly requested replacement before closing
+                # the owned position. An invalid size or margin cannot flatten it.
+                minimum_order(data, idea['direction'], num(balance['balance'], False),
+                              num(balance['available'], False), self.clock(), self.api.offset,
+                              self.requested_size)
+                self.log('ema50_resize_requested', mode=self.mode, deal_id=owned['deal_id'],
+                         old_size=owned['size'], new_size=self.requested_size,
+                         direction=idea['direction'], signal_bar=idea['bar'])
             self.mutate(dict(kind='close', deal_id=owned['deal_id'], bar=idea['bar']),
                         'DELETE', '/positions/' + ident(owned['deal_id']))
         # Close must be accepted and absent from the broker list before reversal.
@@ -378,7 +400,8 @@ class Worker:
         if int(self.clock() // 86400) != self.idea_day:
             raise Wait('daily_boundary_changed_before_entry')
         order = minimum_order(data, idea['direction'], num(balance['balance'], False),
-                              num(balance['available'], False), self.clock(), self.api.offset)
+                              num(balance['available'], False), self.clock(), self.api.offset,
+                              self.requested_size)
         self.mutate(dict(kind='open', order=order, bar=idea['bar']), 'POST', '/positions', order)
 
 
@@ -402,12 +425,15 @@ def main():
         login_gate = LoginGate()
         api = Broker(env, login_gate=login_gate)
         journal = Journal(str(directory / ('gold-daily-ema50-' + mode + '.sqlite')), api.account, mode)
-        worker = Worker(api, journal, mode)
+        requested_size = num(float(env['SMART_GOLD_SIZE'])) if env.get('SMART_GOLD_SIZE') else None
+        worker = Worker(api, journal, mode, requested_size=requested_size)
         stop = threading.Event()
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: stop.set())
         emit('ema50_started', strategy=STRATEGY, mode=mode, epic='GOLD', timeframe='DAY',
-             account_ending=api.account[-4:], size_policy='broker_minimum',
+             account_ending=api.account[-4:],
+             size_policy='explicit_fixed' if requested_size is not None else 'broker_minimum',
+             requested_size=requested_size,
              stop_loss=None, take_profit=None, ai_calls=False)
         if env.get('SMART_EURUSD_PAPER') == '1' and not args.once:
             # The observer owns a separate unarmed client and ledger. Its failure

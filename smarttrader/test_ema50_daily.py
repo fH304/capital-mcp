@@ -97,9 +97,76 @@ class DailyEMA50Tests(unittest.TestCase):
         self.journal.db.close()
         self.tmp.cleanup()
 
-    def make_worker(self, mode='demo'):
+    def make_worker(self, mode='demo', requested_size=None):
         return Worker(self.api,self.journal,mode,clock=lambda:self.api.now,
-                      sleep=lambda _:None,log=lambda event,**kw:self.logs.append((event,kw)))
+                      sleep=lambda _:None,log=lambda event,**kw:self.logs.append((event,kw)),
+                      requested_size=requested_size)
+
+    def test_explicit_size_replaces_owned_minimum_after_confirmed_close(self):
+        self.worker.cycle()
+        original = self.journal.state['position']['deal_id']
+        fixed = self.make_worker(requested_size=.05)
+        fixed.cycle()  # Same closed daily bar: explicit size migration is allowed.
+        self.assertEqual([w[0] for w in self.api.writes],['POST','DELETE','POST'])
+        self.assertEqual(self.api.writes[1][1],'/positions/' + original)
+        self.assertEqual(self.journal.state['position']['size'],.05)
+        self.assertEqual(len(self.api.positions),1)
+        self.assertEqual(self.api.positions[0]['position']['size'],.05)
+        fixed.cycle()
+        self.assertEqual(len(self.api.writes),3)
+
+    def test_explicit_size_survives_restart_and_future_reversal(self):
+        self.make_worker(requested_size=.05).cycle()
+        self.journal.db.close()
+        self.journal = Journal(self.path,self.api.account,'demo')
+        fixed = self.make_worker(requested_size=.05)
+        fixed.cycle()
+        self.assertEqual(len(self.api.writes),1)
+        self.api.now += 86400
+        self.api.direction = 'SELL'
+        fixed.cycle()
+        self.assertEqual(self.journal.state['position']['size'],.05)
+        self.assertEqual(self.journal.state['position']['direction'],'SELL')
+        self.assertEqual(len(self.api.writes),3)
+
+    def test_invalid_fixed_size_cannot_close_existing_trade(self):
+        self.worker.cycle()
+        with self.assertRaises(Halt):
+            self.make_worker(requested_size=.055).cycle()
+        self.assertEqual(len(self.api.writes),1)
+        self.assertEqual(self.api.positions[0]['position']['size'],.01)
+
+    def test_failed_resize_close_is_never_retried_or_followed_by_open(self):
+        self.worker.cycle()
+        self.api.fail_close = True
+        fixed = self.make_worker(requested_size=.05)
+        with self.assertRaises(Transport):
+            fixed.cycle()
+        with self.assertRaises(Halt):
+            fixed.cycle()
+        self.assertEqual([w[0] for w in self.api.writes],['POST','DELETE'])
+        self.assertEqual(self.api.positions[0]['position']['size'],.01)
+
+    def test_fixed_size_keeps_available_margin_guard_before_resize(self):
+        self.worker.cycle()
+        read = self.api.read
+        def low_margin(path):
+            d = read(path)
+            if path == '/accounts':
+                d['accounts'][0]['balance']['available'] = 1
+            return d
+        self.api.read = low_margin
+        with self.assertRaises(Wait):
+            self.make_worker(requested_size=.05).cycle()
+        self.assertEqual(len(self.api.writes),1)
+        self.assertEqual(self.api.positions[0]['position']['size'],.01)
+
+    def test_preview_resize_emits_plan_without_sending_close(self):
+        self.worker.cycle()
+        self.make_worker(mode='preview',requested_size=.05).cycle()
+        self.assertEqual(len(self.api.writes),1)
+        self.assertEqual(self.logs[-1][0],'ema50_preview')
+        self.assertEqual(self.logs[-1][1]['size'],.05)
 
     def test_incomplete_daily_bar_cannot_change_signal(self):
         rows = self.api.prices()
